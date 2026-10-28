@@ -1,0 +1,64 @@
+# host:    srfsp   date: 2026-10-28T02:40:14+00:00
+# cpu:     Intel(R) Xeon(R) 6780E
+# topo:    Thread(s) per core: 1;Core(s) per socket: 36;Socket(s): 2;NUMA node(s): 2
+# flags:   avx2 gfni vpclmulqdq
+# freq:    max 3000.0000 MHz, governor performance
+# memory:  16 Configured Memory Speed: 6400 MT/s;16 Size: 32 GB;16 Type: DDR5
+# sw:      kernel 7.0.0-30-generic; gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0; NASM version 3.01; isa-l 96be773
+# correctness: erasure_code_test: 127x8192 done EC tests: Pass
+# bench:   single-core cpu 2; scale N: 1 2 4 8 16 24 36; isas: avx2 avx2_gfni
+# note:    sections 1-6 run on 2026-10-26, section 7 on 2026-10-28
+=== Model name: Intel(R) Xeon(R) 6780E ; pinned cpu 2 ===
+--- [1] k+p sweep, warm cache (default ~128KB working set), decode e=p ---
+k=4  p=2  : erasure_code_encode_warm: 34481.46 MB/s erasure_code_decode_warm: 34458.93 MB/s 
+k=6  p=3  : erasure_code_encode_warm: 24487.81 MB/s erasure_code_decode_warm: 24695.91 MB/s 
+k=8  p=3  : erasure_code_encode_warm: 23424.92 MB/s erasure_code_decode_warm: 23692.64 MB/s 
+k=8  p=4  : erasure_code_encode_warm: 20193.66 MB/s erasure_code_decode_warm: 19973.45 MB/s 
+k=10 p=4  : erasure_code_encode_warm: 18013.08 MB/s erasure_code_decode_warm: 18250.91 MB/s 
+k=12 p=4  : erasure_code_encode_warm: 18618.74 MB/s erasure_code_decode_warm: 18542.11 MB/s 
+k=16 p=4  : erasure_code_encode_warm: 17681.56 MB/s erasure_code_decode_warm: 17602.62 MB/s 
+k=20 p=4  : erasure_code_encode_warm: 17325.03 MB/s erasure_code_decode_warm: 16156.31 MB/s 
+k=24 p=8  : erasure_code_encode_warm: 8635.39 MB/s erasure_code_decode_warm: 8493.66 MB/s 
+--- [2] 8+4 chunk size sweep, warm (e=4) ---
+chunk=4K    : erasure_code_encode_warm: 20142.25 MB/s erasure_code_decode_warm: 19911.84 MB/s 
+chunk=16K   : erasure_code_encode_warm: 20239.90 MB/s erasure_code_decode_warm: 19942.25 MB/s 
+chunk=64K   : erasure_code_encode_warm: 20131.14 MB/s erasure_code_decode_warm: 19460.26 MB/s 
+chunk=256K  : erasure_code_encode_warm: 18550.81 MB/s erasure_code_decode_warm: 18729.45 MB/s 
+chunk=1M    : erasure_code_encode_warm: 16813.08 MB/s erasure_code_decode_warm: 16829.33 MB/s 
+--- [3] DRAM-bound: chunk 16M (working set >> L3), decode e=p ---
+k=6  p=3  : erasure_code_encode_warm: 18618.05 MB/s erasure_code_decode_warm: 18789.83 MB/s 
+k=8  p=4  : erasure_code_encode_warm: 15431.03 MB/s erasure_code_decode_warm: 15433.39 MB/s 
+k=12 p=4  : erasure_code_encode_warm: 14237.45 MB/s erasure_code_decode_warm: 14268.21 MB/s 
+k=16 p=4  : erasure_code_encode_warm: 13373.09 MB/s erasure_code_decode_warm: 13381.31 MB/s 
+--- [4] 8+4 decode with fewer erasures, warm ---
+e=1 : erasure_code_encode_warm: 20091.57 MB/s erasure_code_decode_warm: 41109.65 MB/s 
+e=2 : erasure_code_encode_warm: 20160.76 MB/s erasure_code_decode_warm: 31020.68 MB/s 
+e=3 : erasure_code_encode_warm: 20154.29 MB/s erasure_code_decode_warm: 23652.67 MB/s 
+e=4 : erasure_code_encode_warm: 20153.22 MB/s erasure_code_decode_warm: 19909.22 MB/s 
+--- [5] scalar baseline (ec_encode_data_base, 10+4 fixed) ---
+erasure_code_base_perf: 14x9344 4
+erasure_code_base_encode_warm: runtime =    3001676 usecs, bandwidth 648 MB in 3.0017 sec = 216.21 MB/s
+erasure_code_base_decode_warm: runtime =    3062916 usecs, bandwidth 671 MB in 3.0629 sec = 219.36 MB/s
+--- [6] multi-core scaling: 8+4, chunk 4M (64MB/instance), N parallel instances on node0 ---
+N=1   encode total    16393 MB/s  decode total    16387 MB/s
+N=2   encode total    32615 MB/s  decode total    32693 MB/s
+N=4   encode total    61728 MB/s  decode total    61962 MB/s
+N=8   encode total   106205 MB/s  decode total   106796 MB/s
+N=16  encode total   154868 MB/s  decode total   154136 MB/s
+N=24  encode total   181307 MB/s  decode total   185918 MB/s
+N=36  encode total   192583 MB/s  decode total   197385 MB/s
+--- [6] multi-core scaling: 10+4, chunk 4M, N parallel instances on node0 ---
+N=1   encode total    15594 MB/s  decode total    15617 MB/s
+N=2   encode total    31057 MB/s  decode total    30968 MB/s
+N=4   encode total    58962 MB/s  decode total    59090 MB/s
+N=8   encode total   103219 MB/s  decode total   103695 MB/s
+N=16  encode total   154768 MB/s  decode total   158865 MB/s
+N=24  encode total   185620 MB/s  decode total   188278 MB/s
+N=36  encode total   198302 MB/s  decode total   206021 MB/s
+--- [7] forced ISA path comparison (single core) ---
+avx2         -k 8 -p 4 -e 4         : erasure_code_encode_warm: 8182.33 MB/s erasure_code_decode_warm: 8121.37 MB/s 
+avx2         -k 10 -p 4 -e 4        : erasure_code_encode_warm: 7676.77 MB/s erasure_code_decode_warm: 7663.66 MB/s 
+avx2         -k 10 -p 4 -e 4 -s 16M : erasure_code_encode_warm: 6469.00 MB/s erasure_code_decode_warm: 6497.04 MB/s 
+avx2_gfni    -k 8 -p 4 -e 4         : erasure_code_encode_warm: 20146.99 MB/s erasure_code_decode_warm: 19942.56 MB/s 
+avx2_gfni    -k 10 -p 4 -e 4        : erasure_code_encode_warm: 19281.99 MB/s erasure_code_decode_warm: 18049.30 MB/s 
+avx2_gfni    -k 10 -p 4 -e 4 -s 16M : erasure_code_encode_warm: 14895.86 MB/s erasure_code_decode_warm: 14920.82 MB/s 

@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ISA-L Erasure Code 性能测试报告 - Xeon 6780E vs Xeon Platinum 8576C</title>
+<style>
+  :root { --grid: #e5e7eb; --txt: #1f2937; --muted: #6b7280; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; color: var(--txt); background: #f6f7f9; line-height: 1.6; }
+  header { background: linear-gradient(120deg, #1e3a8a, #2563eb); color: #fff; padding: 32px 48px; }
+  header h1 { margin: 0 0 6px; font-size: 26px; }
+  header p { margin: 0; opacity: .85; }
+  main { max-width: 1150px; margin: 0 auto; padding: 24px; }
+  section { background: #fff; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,.08); padding: 20px 28px; margin-bottom: 22px; }
+  h2 { font-size: 19px; margin: 0 0 12px; border-left: 4px solid #2563eb; padding-left: 10px; }
+  h3 { font-size: 16px; margin: 18px 0 6px; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin-bottom: 10px; }
+  .kpi { background: #f1f5ff; border-radius: 8px; padding: 12px 16px; }
+  .kpi .l { font-size: 13px; color: var(--muted); }
+  .kpi .v { font-size: 15px; }
+  .kpi .v b { font-size: 24px; }
+  .kpi .s { color: #2f6fde; } .kpi .e { color: #e07a10; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; margin: 8px 0; }
+  th, td { border: 1px solid var(--grid); padding: 5px 9px; text-align: right; }
+  th { background: #f3f4f6; }
+  td:first-child, th:first-child { text-align: left; }
+  .env td { text-align: left; }
+  .txt td, .txt th { text-align: left; }
+  .env td:first-child { width: 120px; color: var(--muted); }
+  .note { font-size: 13px; color: var(--muted); }
+  .legend { font-size: 13px; margin: 2px 0 6px; }
+  .legend span { display: inline-block; margin-right: 16px; }
+  .legend i { display: inline-block; width: 12px; height: 12px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  ul { margin: 6px 0; padding-left: 22px; }
+  code { background: #f3f4f6; padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+  svg text { font-size: 12px; fill: #374151; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ISA-L Erasure Code 性能测试报告</h1>
+  <p>Xeon 6780E (Sierra Forest, srfsp) vs Xeon Platinum 8576C (Emerald Rapids, emr06) · isa-l master@96be773 · 2026-10-27</p>
+</header>
+<main>
+
+<section>
+  <h2>结论摘要</h2>
+  <div class="kpis">
+    <div class="kpi"><div class="l">单核 8+4 encode（缓存内）</div><div class="v"><b class="s">20.2</b> / <b class="e">75.3</b> GB/s</div></div>
+    <div class="kpi"><div class="l">单核 8+4 encode（数据在 DRAM）</div><div class="v"><b class="s">15.4</b> / <b class="e">26.0</b> GB/s</div></div>
+    <div class="kpi"><div class="l">单 socket 10+4 encode 饱和总带宽</div><div class="v"><b class="s">198</b> (36 核) / <b class="e">288</b> (56 核) GB/s</div></div>
+    <div class="kpi"><div class="l">GFNI 路径相对 AVX2 查表路径（8+4）</div><div class="v"><b class="s">2.5×</b> / <b class="e">3.1×</b></div></div>
+  </div>
+  <p class="note"><b style="color:#2f6fde">蓝色</b> = Xeon 6780E，<b style="color:#e07a10">橙色</b> = Xeon Platinum 8576C</p>
+  <ul>
+    <li><b>单核算力</b>：8576C 单核 8+4 encode 75 GB/s，是 6780E（20 GB/s）的 <b>3.7 倍</b>。同样走 AVX2+GFNI 路径时为 2.4 倍（P-core vs E-core、4.0 vs 3.0 GHz）；AVX-512+GFNI 再带来 1.6 倍。</li>
+    <li><b>GFNI 是关键</b>：8576C 上不带 GFNI 的 AVX-512 路径（23.8 GB/s）与 AVX2 路径（24.3 GB/s）基本相同；有 GFNI 后 AVX2 为 48 GB/s，AVX-512 为 76 GB/s。</li>
+    <li><b>8576C 很快受内存/缓存带宽限制</b>：工作集超出 L2（2 MB/核）后单核吞吐减半（256 KB chunk 时 39 GB/s）；数据在 DRAM 时单核降为 26 GB/s，对 6780E 的优势缩小到 1.7 倍。</li>
+    <li><b>多核扩展</b>：8576C 用 4–8 个核就能把一个 SNC 域的内存带宽用掉大半，单个 SNC 域（28 核）饱和于约 145 GB/s，整个 socket（56 核，2 个 SNC 域）约 290 GB/s。6780E 需要 24–36 核才接近其 193–198 GB/s 的上限。</li>
+    <li>socket 级<b>有效数据吞吐</b>（10+4，只算源数据）：8576C 约 206 GB/s，6780E 约 142 GB/s。</li>
+    <li>编码开销主要由校验块数 p 决定；decode 开销与实际丢失块数 e 成正比，两个平台规律一致。</li>
+    <li>差距来源的拆解见 <a href="#analysis">第 8 节</a>。</li>
+  </ul>
+</section>
+
+<section>
+  <h2>测试环境与方法</h2>
+  <table class="env">
+    <tr><th></th><th>srfsp：Xeon 6780E</th><th>emr06：Xeon Platinum 8576C</th></tr>
+    <tr><td>CPU</td><td>2 socket × 36 核在线（E-core，无 SMT），最高 3.0 GHz。每个 4 核 L2 模块仅 1 核在线，推测是 BIOS 限制了核数</td><td>2 socket × 56 核（P-core，开启 SMT，测试只用物理核），最高 4.0 GHz</td></tr>
+    <tr><td>指令集 / 默认路径</td><td>AVX2、GFNI，<b>无 AVX-512</b> → <code>ec_encode_data_avx2_gfni</code></td><td>AVX-512、GFNI → <code>ec_encode_data_avx512_gfni</code></td></tr>
+    <tr><td>缓存</td><td>L2 4 MB/核（模块独占），L3 108 MB/socket</td><td>L2 2 MB/核，L3 280 MB/socket</td></tr>
+    <tr><td>内存</td><td>16 × 32 GB DDR5-6400，2 个 NUMA 节点（每 socket 1 个）</td><td>16 × 32 GB DDR5-5600，SNC2：4 个 NUMA 节点（每 socket 2 个，各 28 核）</td></tr>
+    <tr><td>软件</td><td>Linux 7.0.0-30，GCC 15.2.0，NASM 3.01</td><td>Linux 6.12.0，GCC 11.5.0，NASM 2.15.03</td></tr>
+    <tr><td>共同项</td><td colspan="2">isa-l master@96be773，<code>make -f Makefile.unx</code>（库 -O2）；governor = performance；<code>erasure_code_test</code> 全部通过；每项运行 3 s，decode 结果均与原始数据比对通过。测试脚本 <code>erasure_code/bench/ec_bench.sh</code>，原始结果 <code>erasure_code/bench/results/{srfsp,emr06}.txt</code></td></tr>
+  </table>
+  <ul class="note">
+    <li>单核测试绑定 CPU 2；多核测试为 N 个独立 <code>erasure_code_perf</code> 进程，分别绑定 socket 0 的物理核 0..N-1（8576C 上核 0–27 属于 SNC 节点 0，28–55 属于节点 1）。</li>
+    <li>带宽口径（isa-l 原生）：encode = (k+p) × chunk / 时间，decode = (k+e) × chunk / 时间；“有效数据吞吐” = encode × k/(k+p)。</li>
+    <li>没有使用 <code>--cold</code> 模式：它只初始化第一个 chunk 的源数据，其余读的是内核零页，结果偏乐观。DRAM 测试改用 16 MB chunk（工作集远大于 L3）。</li>
+    <li>ISA 路径对比：重新编译 <code>erasure_code_perf</code>，用 <code>-Dec_encode_data=ec_encode_data_&lt;isa&gt; -Dec_init_tables=ec_init_tables_{base|gfni}</code> 绕过 CPUID 分发，直接链接 <code>bin/isa-l.a</code>。</li>
+  </ul>
+</section>
+
+<section>
+  <h2>1. 不同 k+p 配置（单核，缓存内，decode e = p）</h2>
+  <div id="c-sweep"></div>
+  <table id="t-sweep"></table>
+</section>
+
+<section>
+  <h2>2. chunk 大小影响（单核，8+4，e = 4）</h2>
+  <div id="c-chunk"></div>
+  <table id="t-chunk"></table>
+  <p class="note">每次运行使用 16 个 chunk 大小的缓冲区（8 源 + 4 校验 + 4 decode 输出）。8576C 的 L2 为 2 MB/核，256 KB chunk 时工作集约 4 MB，已超出 L2，吞吐降到约一半；6780E 的 L2 为 4 MB 且本身算得慢，下降较平缓。</p>
+</section>
+
+<section>
+  <h2>3. 缓存内 vs DRAM（单核，encode）</h2>
+  <div id="c-dram"></div>
+  <table id="t-dram"></table>
+</section>
+
+<section>
+  <h2>4. 丢失块数对 decode 的影响（单核，8+4，缓存内）</h2>
+  <div id="c-err"></div>
+  <p class="note">decode 计算量与 e 成正比，但带宽口径为 (k+e)，因此 e 越小数值越高。encode 稳定在 6780E 约 20.1 GB/s、8576C 约 74.5 GB/s。</p>
+</section>
+
+<section>
+  <h2>5. ISA 路径对比（单核，强制指定实现）</h2>
+  <div id="c-isa"></div>
+  <table id="t-isa"></table>
+  <p class="note">6780E 不支持 AVX-512，只测两个 AVX2 路径；其默认分发结果（20.2 GB/s）与 avx2_gfni 一致。数据在 DRAM 时（16 MB chunk），8576C 上各路径差距收窄到 1.3 倍以内（已受内存限制）；6780E 上 avx2_gfni 仍是 avx2 的 2.3 倍，说明 6780E 的 avx2 路径在 DRAM 场景下仍受算力限制。</p>
+</section>
+
+<section>
+  <h2>6. SIMD vs 纯 C 标量（单核，10+4，缓存内）</h2>
+  <table>
+    <tr><th>平台</th><th>纯 C <code>ec_encode_data_base</code> encode / decode (MB/s)</th><th>默认 SIMD 路径 encode / decode (MB/s)</th><th>加速比</th></tr>
+    <tr><td>Xeon 6780E</td><td>216 / 219</td><td>18,013 / 18,251（avx2_gfni）</td><td><b>83×</b></td></tr>
+    <tr><td>Xeon 8576C</td><td>436 / 436</td><td>73,320 / 73,171（avx512_gfni）</td><td><b>168×</b></td></tr>
+  </table>
+</section>
+
+<section>
+  <h2>7. 多核扩展（chunk 4 MB，N 个独立进程，socket 0）</h2>
+  <div id="c-scale"></div>
+  <table id="t-scale-srf"></table>
+  <table id="t-scale-emr"></table>
+  <ul class="note">
+    <li>每个进程工作集 64 MB（8+4）/ 72 MB（10+4）。N 较小时有一部分能命中 L3，N 增大后数据主要来自 DRAM。</li>
+    <li>8576C 开启 SNC2，N ≤ 28 时所有进程都在 SNC 节点 0 上，只用到该 socket 一半的内存控制器；N = 56 时跨两个 SNC 节点，带宽约翻倍。图中 28 到 56 之间没有测点，那段是直线连接。</li>
+    <li>按 8 通道估算的理论内存带宽：6780E 约 410 GB/s/socket（DDR5-6400），8576C 约 358 GB/s/socket（DDR5-5600，每个 SNC 节点约 179 GB/s）。</li>
+  </ul>
+</section>
+
+<section id="analysis">
+  <h2>8. 性能差异分析：为什么 8576C 高这么多</h2>
+  <p>差距的来源随场景变化：单核且数据在缓存内时，比的是<b>核心算力</b>；数据在 DRAM 或多核满载时，比的是<b>内存子系统</b>。</p>
+  <table class="txt">
+    <tr><th>场景</th><th>8576C / 6780E</th><th>主要原因</th></tr>
+    <tr><td>单核，缓存内（8+4）</td><td>3.7×（75.3 / 20.2）</td><td>P-core vs E-core（频率 + 每周期吞吐）× AVX-512</td></tr>
+    <tr><td>单核，DRAM（8+4，16 MB chunk）</td><td>1.7×（26.0 / 15.4）</td><td>单核可同时发出的内存请求数与预取能力</td></tr>
+    <tr><td>整个 socket（10+4）</td><td>1.5×（288 / 198）</td><td>内存带宽；6780E 每 socket 只有 36 核在线</td></tr>
+  </table>
+
+  <h3>8.1 单核缓存内：3.7× = 2.4×（核心）× 1.6×（AVX-512）</h3>
+  <table class="txt">
+    <tr><th>对比项（8+4，缓存内）</th><th>数值</th><th>倍数</th></tr>
+    <tr><td>6780E <code>avx2_gfni</code>（默认） → 8576C <code>avx2_gfni</code></td><td>20.1 → 48.1 GB/s</td><td>2.4×：核心本身的差距</td></tr>
+    <tr><td>8576C <code>avx2_gfni</code> → 8576C <code>avx512_gfni</code>（默认）</td><td>48.1 → 76.1 GB/s</td><td>1.6×：AVX-512</td></tr>
+  </table>
+  <ul>
+    <li><b>核心差距（2.4×）</b>
+      <ul>
+        <li>频率：最高睿频 4.0 vs 3.0 GHz，约 1.33×（规格值，测试时实际频率未测）。</li>
+        <li>每周期能力：6780E 的 E-core 向量单元为 128 位，256 位 AVX2 指令拆成两次执行；8576C 的 P-core 原生 256 位，每周期读写和运算能力更强。去掉频率后每周期仍快约 1.8×。</li>
+        <li>纯 C 标量版本也有相同趋势（436 vs 216 MB/s，约 2×），说明这是通用的核心差距，不只是向量部分。</li>
+      </ul>
+    </li>
+    <li><b>AVX-512（1.6×）</b>：每条指令处理 64 字节，是 AVX2 的两倍；寄存器从 16 个增至 32 个，更多系数表能常驻寄存器。读写数据和循环控制开销没有减半，所以达不到 2×。6780E 不支持 AVX-512。</li>
+    <li><b>GFNI 是前提</b>：没有 GFNI 时每次 GF(2<sup>8</sup>) 乘法需两次查表（<code>vpshufb</code>）加一次异或，有 GFNI 后一条 <code>gf2p8affineqb</code> 即可完成。因此 8576C 上不带 GFNI 的 <code>avx512</code>（23.8 GB/s）与 <code>avx2</code>（24.3 GB/s）几乎相同。推测原因：该代 P-core 上 512 位 <code>vpshufb</code> 只能在 1 个执行端口运行，256 位的可在 2 个端口运行，每周期处理的字节数相同（未用性能计数器验证）。</li>
+  </ul>
+
+  <h3>8.2 单核 DRAM：优势缩小到 1.7×</h3>
+  <p>数据不在缓存中时，瓶颈从计算变为单核能同时发出多少内存请求以及预取能力。P-core 在这方面更强，但差距远小于算力差距。第 2 节的 chunk 测试也反映了这一点：8576C 的 L2 只有 2 MB/核，256 KB chunk 放不进 L2 时吞吐直接减半。</p>
+
+  <h3>8.3 多核：两边都受内存带宽限制</h3>
+  <ul>
+    <li>8576C 的 4–8 个核即可把一个 SNC 节点的内存带宽用掉大半，56 核覆盖两个节点，共约 290 GB/s。</li>
+    <li>6780E 的内存条规格更高（DDR5-6400 vs 5600），却只跑到约 193–198 GB/s。可能原因：
+      <ul>
+        <li>每 socket 只有 36 核在线（标准为 144 核），单个 E-core 可同时发出的内存请求有限，36 核可能还没把内存带宽用满；</li>
+        <li>或是 6780E 内存子系统本身的上限。</li>
+      </ul>
+    </li>
+  </ul>
+  <p class="note">待验证：用 <code>perf stat</code> 测实际运行频率与每周期指令数，把“频率”和“每周期能力”分开；用 Intel MLC 测两台机器的实际内存带宽，确认 6780E 的多核上限是否受限于内存。</p>
+</section>
+
+</main>
+
+<script>
+const S = "Xeon 6780E", E = "Xeon 8576C";
+const C = {s:"#2f6fde", s2:"#9dbcf0", s3:"#1aa37a", e:"#f08c2e", e2:"#f7c38f", e3:"#c2408f"};
+const D = {
+  kp: ["4+2","6+3","8+3","8+4","10+4","12+4","16+4","20+4","24+8"],
+  sweep: {
+    s: {enc:[34481,24488,23425,20194,18013,18619,17682,17325,8635],   dec:[34459,24696,23693,19973,18251,18542,17603,16156,8494]},
+    e: {enc:[111900,91205,85588,75327,73320,70197,65773,62904,33091], dec:[111629,90707,86078,74337,73171,69913,64262,62449,33160]}
+  },
+  chunks: ["4K","16K","64K","256K","1M"],
+  chunk: {
+    s: {enc:[20142,20240,20131,18551,16813], dec:[19912,19942,19460,18729,16829]},
+    e: {enc:[78695,74178,72624,39455,36785], dec:[74132,73888,71823,39528,36663]}
+  },
+  dkp: ["6+3","8+4","12+4","16+4"],
+  dram: {
+    s: {cache:[24488,20194,18619,17682], dram:[18618,15431,14237,13373]},
+    e: {cache:[91205,75327,70197,65773], dram:[30888,26033,21757,20074]}
+  },
+  errs: ["e=1","e=2","e=3","e=4"],
+  err: {s:[41110,31021,23653,19909], e:[113145,100586,84053,73744]},
+  isas: ["avx2","avx2_gfni","avx512","avx512_gfni"],
+  isa: {
+    e84:[24342,48052,23786,76114], e104:[23277,49899,22137,72695], e104d:[18644,21480,18978,23547],
+    s84:[8182,20147,null,null], s104:[7677,19282,null,null], s104d:[6469,14896,null,null]
+  },
+  scale: {
+    s: {N:[1,2,4,8,16,24,36],
+        enc84:[16393,32615,61728,106205,154868,181307,192583], dec84:[16387,32693,61962,106796,154136,185918,197385],
+        enc104:[15594,31057,58962,103219,154768,185620,198302], dec104:[15617,30968,59090,103695,158865,188278,206021]},
+    e: {N:[1,2,4,8,16,28,56],
+        enc84:[33175,67411,101328,114921,123117,145641,290530], dec84:[33168,67031,102726,124984,124443,147165,293659],
+        enc104:[32843,65022,87975,111550,125662,144589,288328], dec104:[32897,65312,95605,114077,127219,145913,291262]}
+  }
+};
+const NS = "http://www.w3.org/2000/svg";
+const gb = v => v == null ? "–" : (v/1000).toFixed(1);
+const pct = (a, b) => ((1 - b/a) * 100).toFixed(0) + "%";
+const x = (a, b) => (a/b).toFixed(1) + "×";
+
+function el(tag, attrs, parent, text) {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (text !== undefined) e.textContent = text;
+  parent && parent.appendChild(e);
+  return e;
+}
+
+function legend(host, series) {
+  const d = document.createElement("div");
+  d.className = "legend";
+  d.innerHTML = series.map(s => `<span><i style="background:${s.c}"></i>${s.n}</span>`).join("");
+  host.appendChild(d);
+}
+
+function axes(svg, W, H, m, ymax, ylabel) {
+  const step = [5,10,20,25,50,100].find(s => ymax/s <= 8);
+  for (let y = 0; y <= ymax; y += step) {
+    const py = H - m.b - (H - m.t - m.b) * y / ymax;
+    el("line", {x1:m.l, x2:W-m.r, y1:py, y2:py, stroke:"#e5e7eb"}, svg);
+    el("text", {x:m.l-6, y:py+4, "text-anchor":"end"}, svg, y);
+  }
+  el("text", {x:14, y:m.t-10}, svg, ylabel);
+}
+
+function bars(id, cats, series, ymax, ylabel) {
+  const host = document.getElementById(id), W = 1000, H = 300, m = {l:50, r:10, t:28, b:30};
+  legend(host, series);
+  const svg = el("svg", {viewBox:`0 0 ${W} ${H}`, width:"100%"}, host);
+  axes(svg, W, H, m, ymax, ylabel);
+  const gw = (W - m.l - m.r) / cats.length, bw = Math.min(36, gw * 0.8 / series.length);
+  const fs = series.length > 2 ? 9 : 10;
+  cats.forEach((c, i) => {
+    const x0 = m.l + gw * i + (gw - bw * series.length) / 2;
+    series.forEach((s, j) => {
+      if (s.v[i] == null) return;
+      const v = s.v[i] / 1000, h = (H - m.t - m.b) * v / ymax;
+      el("rect", {x:x0 + j*bw, y:H-m.b-h, width:bw-2, height:h, fill:s.c, rx:2}, svg);
+      el("text", {x:x0 + j*bw + bw/2 - 1, y:H-m.b-h-4, "text-anchor":"middle", style:`font-size:${fs}px`}, svg, v.toFixed(v >= 100 ? 0 : 1));
+    });
+    el("text", {x:m.l + gw*i + gw/2, y:H-m.b+18, "text-anchor":"middle"}, svg, c);
+  });
+}
+
+function lines(id, series, xmax, xticks, ymax, ylabel, marks) {
+  const host = document.getElementById(id), W = 1000, H = 380, m = {l:50, r:20, t:28, b:40};
+  legend(host, series);
+  const svg = el("svg", {viewBox:`0 0 ${W} ${H}`, width:"100%"}, host);
+  axes(svg, W, H, m, ymax, ylabel);
+  const px = v => m.l + (W - m.l - m.r) * v / xmax;
+  const py = v => H - m.b - (H - m.t - m.b) * v / 1000 / ymax;
+  xticks.forEach(t => el("text", {x:px(t), y:H-m.b+18, "text-anchor":"middle"}, svg, t));
+  el("text", {x:W/2, y:H-4, "text-anchor":"middle"}, svg, "进程数 N（每进程绑定 1 个物理核）");
+  marks.forEach(k => {
+    el("line", {x1:px(k.x), x2:px(k.x), y1:m.t, y2:H-m.b, stroke:"#9ca3af", "stroke-dasharray":"5 4"}, svg);
+    el("text", {x:px(k.x)+6, y:m.t+12, style:"font-size:11px;fill:#6b7280"}, svg, k.t);
+  });
+  series.forEach(s => {
+    el("polyline", {points: s.x.map((xv,i) => `${px(xv)},${py(s.v[i])}`).join(" "), fill:"none", stroke:s.c, "stroke-width":2.5, "stroke-dasharray":s.dash||""}, svg);
+    s.x.forEach((xv,i) => el("circle", {cx:px(xv), cy:py(s.v[i]), r:3.5, fill:s.c}, svg));
+  });
+}
+
+function table(id, head, rows) {
+  document.getElementById(id).innerHTML =
+    "<tr>" + head.map(h => `<th>${h}</th>`).join("") + "</tr>" +
+    rows.map(r => "<tr>" + r.map(c => `<td>${c}</td>`).join("") + "</tr>").join("");
+}
+
+const kpData = kp => { const [k,p] = kp.split("+").map(Number); return k/(k+p); };
+
+// 1. k+p sweep
+bars("c-sweep", D.kp, [
+  {n:`${S} encode`, c:C.s, v:D.sweep.s.enc}, {n:`${E} encode`, c:C.e, v:D.sweep.e.enc}
+], 120, "GB/s");
+table("t-sweep", ["k+p", `${S} enc`, "dec", "有效数据", `${E} enc`, "dec", "有效数据", "8576C / 6780E"],
+  D.kp.map((n,i) => { const s = D.sweep.s, e = D.sweep.e, r = kpData(n);
+    return [n, gb(s.enc[i]), gb(s.dec[i]), gb(s.enc[i]*r), gb(e.enc[i]), gb(e.dec[i]), gb(e.enc[i]*r), x(e.enc[i], s.enc[i])]; }));
+
+// 2. chunk sweep
+bars("c-chunk", D.chunks, [
+  {n:`${S} encode`, c:C.s, v:D.chunk.s.enc}, {n:`${S} decode`, c:C.s2, v:D.chunk.s.dec},
+  {n:`${E} encode`, c:C.e, v:D.chunk.e.enc}, {n:`${E} decode`, c:C.e2, v:D.chunk.e.dec}
+], 80, "GB/s");
+table("t-chunk", ["chunk", `${S} enc`, "dec", `${E} enc`, "dec", "8576C / 6780E"],
+  D.chunks.map((c,i) => [c, gb(D.chunk.s.enc[i]), gb(D.chunk.s.dec[i]), gb(D.chunk.e.enc[i]), gb(D.chunk.e.dec[i]), x(D.chunk.e.enc[i], D.chunk.s.enc[i])]));
+
+// 3. cache vs DRAM
+bars("c-dram", D.dkp, [
+  {n:`${S} 缓存内`, c:C.s, v:D.dram.s.cache}, {n:`${S} DRAM (16M)`, c:C.s2, v:D.dram.s.dram},
+  {n:`${E} 缓存内`, c:C.e, v:D.dram.e.cache}, {n:`${E} DRAM (16M)`, c:C.e2, v:D.dram.e.dram}
+], 100, "GB/s");
+table("t-dram", ["k+p", `${S} 缓存内`, "DRAM", "下降", `${E} 缓存内`, "DRAM", "下降", "DRAM 下 8576C / 6780E"],
+  D.dkp.map((n,i) => { const s = D.dram.s, e = D.dram.e;
+    return [n, gb(s.cache[i]), gb(s.dram[i]), pct(s.cache[i], s.dram[i]), gb(e.cache[i]), gb(e.dram[i]), pct(e.cache[i], e.dram[i]), x(e.dram[i], s.dram[i])]; }));
+
+// 4. erasures
+bars("c-err", D.errs, [{n:`${S} decode`, c:C.s, v:D.err.s}, {n:`${E} decode`, c:C.e, v:D.err.e}], 120, "decode GB/s");
+
+// 5. ISA paths
+bars("c-isa", D.isas, [
+  {n:`${E} 8+4 缓存内`, c:C.e, v:D.isa.e84}, {n:`${E} 10+4 缓存内`, c:C.e3, v:D.isa.e104},
+  {n:`${E} 10+4 DRAM (16M)`, c:C.e2, v:D.isa.e104d}, {n:`${S} 8+4 缓存内`, c:C.s, v:D.isa.s84},
+  {n:`${S} 10+4 DRAM (16M)`, c:C.s2, v:D.isa.s104d}
+], 80, "encode GB/s");
+table("t-isa", ["实现", `${E} 8+4`, `${E} 10+4`, `${E} 10+4 DRAM`, `${S} 8+4`, `${S} 10+4`, `${S} 10+4 DRAM`, `${E} 8+4 相对 avx2`],
+  D.isas.map((n,i) => [`<code>ec_encode_data_${n}</code>` + (n === "avx512_gfni" ? "（8576C 默认）" : n === "avx2_gfni" ? "（6780E 默认）" : ""),
+    gb(D.isa.e84[i]), gb(D.isa.e104[i]), gb(D.isa.e104d[i]), gb(D.isa.s84[i]), gb(D.isa.s104[i]), gb(D.isa.s104d[i]), x(D.isa.e84[i], D.isa.e84[0])]));
+
+// 7. scaling
+const sc = D.scale;
+lines("c-scale", [
+  {n:`${S} 8+4`, c:C.s, x:sc.s.N, v:sc.s.enc84}, {n:`${S} 10+4`, c:C.s3, x:sc.s.N, v:sc.s.enc104, dash:"5 3"},
+  {n:`${E} 8+4`, c:C.e, x:sc.e.N, v:sc.e.enc84}, {n:`${E} 10+4`, c:C.e3, x:sc.e.N, v:sc.e.enc104, dash:"5 3"}
+], 56, [1,4,8,16,24,28,36,56], 300, "encode 总带宽 GB/s", [{x:28, t:"8576C SNC 节点边界（28 核）"}]);
+const scaleRows = p => p.N.map((n,i) => [n,
+  gb(p.enc84[i]), gb(p.dec84[i]), gb(p.enc84[i]*8/12),
+  gb(p.enc104[i]), gb(p.dec104[i]), gb(p.enc104[i]*10/14)]);
+const scaleHead = name => [`${name} N`, "8+4 enc (GB/s)", "8+4 dec", "8+4 有效数据", "10+4 enc (GB/s)", "10+4 dec", "10+4 有效数据"];
+table("t-scale-srf", scaleHead(S), scaleRows(sc.s));
+table("t-scale-emr", scaleHead(E), scaleRows(sc.e));
+</script>
+</body>
+</html>
