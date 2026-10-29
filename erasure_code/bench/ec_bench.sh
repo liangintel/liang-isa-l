@@ -1,10 +1,10 @@
 #!/bin/bash
-# ISA-L 纠删码（EC）性能测试：编译 -> 正确性测试 -> 7 组性能测试，结果写入 results/<主机名>.txt
+# ISA-L 纠删码（EC）性能测试：编译 -> 正确性测试 -> 8 组性能测试，结果写入 results/<主机名>.txt
 #
 # 用法（在仓库任意目录下）：erasure_code/bench/ec_bench.sh
 # 可用环境变量覆盖默认值：
 #   CPU=2                 单核测试绑定的 CPU
-#   SECTIONS="1 2 ... 7"  只跑指定的测试段
+#   SECTIONS="1 2 ... 8"  只跑指定的测试段
 #   SCALE_N="1 2 4 ..."   第 6 段使用的物理核数列表（默认：2 的幂、首个 NUMA 节点核数、每 socket 核数、全部核数）
 #   ISAS="avx2 ..."       第 7 段对比的指令集路径（默认：本机 CPU 支持的全部）
 #   OUT=path              结果文件路径
@@ -19,7 +19,7 @@ ISAL=${ISAL:-$(cd "$BENCH_DIR/../.." && pwd)}
 PERF=$ISAL/erasure_code_perf
 BASE=$ISAL/erasure_code_base_perf
 CPU=${CPU:-2}
-SECTIONS=${SECTIONS:-"1 2 3 4 5 6 7"}
+SECTIONS=${SECTIONS:-"1 2 3 4 5 6 7 8"}
 OUT=${OUT:-$BENCH_DIR/results/$(hostname -s).txt}
 
 # CPU 是否支持某个指令集标志
@@ -120,6 +120,31 @@ scale_point() {
 	rm -rf "$tmp"
 }
 
+# ---------- 第 8 段：同时在几个指定 CPU 上各跑 1 个进程 ----------
+# 展开 "0-3,112" 这样的 CPU 列表
+cpu_expand() { awk -v RS=, -F- 'NF {for (i = $1; i <= ($2 == "" ? $1 : $2); i++) print i}' <<< "$1"; }
+# 参数：CPU 列表（逗号分隔）和 erasure_code_perf 参数；输出各进程 encode/decode 之和、有效数据和平均频率
+# 单核访存结果波动约 10%，重复 REPS 次取 encode 之和最高的一次
+pair_point() {
+	local list=$1 k=$3 p=$5 c tmp pids=() r best=
+	shift
+	for ((r = 0; r < ${REPS:-3}; r++)); do
+		tmp=$(mktemp -d) pids=()
+		for c in ${list//,/ }; do
+			$PRIV perf stat -x, -o "$tmp/st.$c" -e cycles,task-clock taskset -c "$c" "$PERF" "$@" > "$tmp/out.$c" &
+			pids+=($!)
+		done
+		wait "${pids[@]}"
+		best+=$(cat "$tmp"/out.* | awk -v k="$k" -v p="$p" '/encode/ {e += $(NF-1)} /decode/ {d += $(NF-1)}
+			END {printf "enc=%.0f dec=%.0f data=%.0f ", e, d, e * k / (k + p)}')
+		best+=$($PRIV cat "$tmp"/st.* | awk -F, '$3 ~ /^cycles/ {c += $1} $3 ~ /^task-clock/ {t += $1}
+			END {if (c && t) printf "mhz=%.0f", c / t / 1000}')
+		best+=$'\n'
+		$PRIV rm -rf "$tmp"
+	done
+	awk '{split($1, a, "="); if (a[2] + 0 > m) {m = a[2] + 0; l = $0}} END {print l}' <<< "$best"
+}
+
 # ---------- 编译与正确性测试 ----------
 # 用 Makefile.unx 编译（不依赖 autotools/libtool），生成 bin/isa-l.a 和仓库根目录下的测试程序
 # 编译失败或 erasure_code_test 不通过则直接退出，不跑性能测试
@@ -215,6 +240,27 @@ for isa in $ISAS; do
 	for args in "-k 8 -p 4 -e 4" "-k 10 -p 4 -e 4" "-k 10 -p 4 -e 4 -s 64M"; do
 		printf "%-12s %-22s : " $isa "$args"; PERF=$bin PSTAT=1 run $args
 	done
+done
+fi
+
+# [8] 1 个线程 vs 2 个线程（10+4）：按“虚拟 CPU”对比 P-core 超线程和 E-core
+#   1t     : CPU 上 1 个进程
+#   smt    : CPU 和它的 SMT 兄弟线程各 1 个（同一物理核，仅有 SMT 时）
+#   2c_l2  : CPU 和共享同一 L2 模块的另一个物理核（E-core 每 4 核共享 L2 时）
+#   2c     : CPU 和不共享 L2 的另一个物理核
+#   cache 用默认 chunk（数据在缓存内），dram 用 64M chunk（每进程工作集约 1GB）
+if want 8; then
+echo "--- [8] 10+4, 1 thread vs 2 threads: same physical core (SMT) / 2 cores sharing L2 / 2 separate cores ---"
+sib=$(cpu_expand "$(cat /sys/devices/system/cpu/cpu$CPU/topology/thread_siblings_list)" | grep -vx "$CPU" | head -1)
+l2=$(cpu_expand "$(cat /sys/devices/system/cpu/cpu$CPU/cache/index2/shared_cpu_list)")
+l2mate=$(for c in "${PHYS[@]}"; do grep -qx "$c" <<< "$l2" && [[ $c != "$CPU" ]] && echo "$c"; done | tail -1)
+other=$(for c in "${PHYS[@]}"; do ((c > CPU)) && ! grep -qx "$c" <<< "$l2" && echo "$c"; done | head -1)
+for wl in cache dram; do
+	[[ $wl == dram ]] && sz="-s 64M" || sz=""
+	printf "cfg=%-6s cpus=%-8s wl=%-5s " 1t "$CPU" $wl; pair_point "$CPU" -k 10 -p 4 -e 4 $sz
+	[[ -n $sib ]] && { printf "cfg=%-6s cpus=%-8s wl=%-5s " smt "$CPU,$sib" $wl; pair_point "$CPU,$sib" -k 10 -p 4 -e 4 $sz; }
+	[[ -n $l2mate ]] && { printf "cfg=%-6s cpus=%-8s wl=%-5s " 2c_l2 "$CPU,$l2mate" $wl; pair_point "$CPU,$l2mate" -k 10 -p 4 -e 4 $sz; }
+	[[ -n $other ]] && { printf "cfg=%-6s cpus=%-8s wl=%-5s " 2c "$CPU,$other" $wl; pair_point "$CPU,$other" -k 10 -p 4 -e 4 $sz; }
 done
 fi
 } 2>&1 | tee "$OUT"

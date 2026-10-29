@@ -21,7 +21,7 @@ def triple(line):
 
 
 def parse(path):
-    r = {"head": {}, "s1": {}, "s2": {}, "s3": {}, "s4": {}, "s5": None, "s6": [], "s7": {}}
+    r = {"head": {}, "s1": {}, "s2": {}, "s3": {}, "s4": {}, "s5": None, "s6": [], "s7": {}, "s8": []}
     sec = None
     for line in open(path):
         line = line.rstrip("\n")
@@ -52,6 +52,9 @@ def parse(path):
         elif sec == "6" and line.startswith("wl="):
             kv = dict(re.findall(r"(\w+)=(\S+)", line))
             r["s6"].append({k: (v if k == "wl" else float(v) if v != "na" else None) for k, v in kv.items()})
+        elif sec == "8" and line.startswith("cfg="):
+            kv = dict(re.findall(r"(\w+)=(\S+)", line))
+            r["s8"].append({k: (v if k in ("cfg", "cpus", "wl") else float(v)) for k, v in kv.items()})
         elif sec == "7":
             m = re.match(r"(\S+)\s+-k (\d+) -p (\d+) -e \d+(?: -s (\S+))?\s+:", line)
             if m:

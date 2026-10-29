@@ -8,6 +8,7 @@
 # bench:   single-core cpu 2; 72 physical cores (36 per socket, 36 in first NUMA node), SMT siblings 0; scale cores: 1 2 4 8 16 32 36 64 72; procs per core: 1; isas: avx2 avx2_gfni
 # correctness: erasure_code_test: 127x8192 done EC tests: Pass
 # note:    section 6 from run at 2026-10-29T01:46:59+00:00; section 7 from run at 2026-10-29T01:54:25+00:00
+# note:    section 8 from run at 2026-10-29T08:37:36+00:00
 --- [1] k+p sweep, warm cache (default ~128KB working set), decode e=p ---
 k=4  p=2  : erasure_code_encode_warm: 34507.24 MB/s erasure_code_decode_warm: 34550.70 MB/s data: 23004.83 MB/s
 k=6  p=3  : erasure_code_encode_warm: 24516.50 MB/s erasure_code_decode_warm: 24611.70 MB/s data: 16344.33 MB/s
@@ -65,3 +66,8 @@ avx2         -k 10 -p 4 -e 4 -s 64M : erasure_code_encode_warm: 6321.72 MB/s era
 avx2_gfni    -k 8 -p 4 -e 4         : erasure_code_encode_warm: 20210.82 MB/s erasure_code_decode_warm: 19950.94 MB/s data: 13473.88 MB/s mhz=2994 ipc=2.09
 avx2_gfni    -k 10 -p 4 -e 4        : erasure_code_encode_warm: 19320.73 MB/s erasure_code_decode_warm: 18081.07 MB/s data: 13800.52 MB/s mhz=2994 ipc=2.04
 avx2_gfni    -k 10 -p 4 -e 4 -s 64M : erasure_code_encode_warm: 13315.17 MB/s erasure_code_decode_warm: 13491.58 MB/s data: 9510.84 MB/s mhz=2887 ipc=2.20
+--- [8] 10+4, 1 thread vs 2 threads: same physical core (SMT) / 2 cores sharing L2 / 2 separate cores ---
+cfg=1t     cpus=2        wl=cache enc=19355 dec=18146 data=13825 mhz=2994
+cfg=2c     cpus=2,3      wl=cache enc=38679 dec=36234 data=27628 mhz=2994
+cfg=1t     cpus=2        wl=dram  enc=13411 dec=13524 data=9579 mhz=2886
+cfg=2c     cpus=2,3      wl=dram  enc=26065 dec=26485 data=18618 mhz=2892
