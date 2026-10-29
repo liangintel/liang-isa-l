@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Parse results/*.txt produced by ec_bench.sh and embed them as JSON into ec_report.html
-(between the /*DATA_BEGIN*/ and /*DATA_END*/ markers).
+"""Parse results/*.txt produced by ec_bench.sh and embed them as JSON into ec_report.html and
+ec_report_en.html (between the /*DATA_BEGIN*/ and /*DATA_END*/ markers).
 
 Usage: erasure_code/bench/gen_report_data.py
 """
@@ -102,14 +102,16 @@ def main():
             res["hold"][f[:-4]] = parse_hold(path)
         elif f.endswith(".txt"):
             res[f[:-4]] = parse(path)
-    html = os.path.join(BENCH, "ec_report.html")
-    text = open(html).read()
     data = "/*DATA_BEGIN*/" + json.dumps(res, separators=(",", ":")) + "/*DATA_END*/"
-    text, n = re.subn(r"/\*DATA_BEGIN\*/.*?/\*DATA_END\*/", lambda _: data, text, flags=re.S)
-    if n != 1:
-        raise SystemExit("data markers not found in ec_report.html")
-    open(html, "w").write(text)
-    print(f"embedded results of {', '.join(res)} into {html}")
+    for name in ("ec_report.html", "ec_report_en.html"):
+        html = os.path.join(BENCH, name)
+        if not os.path.exists(html):
+            continue
+        text, n = re.subn(r"/\*DATA_BEGIN\*/.*?/\*DATA_END\*/", lambda _: data, open(html).read(), flags=re.S)
+        if n != 1:
+            raise SystemExit(f"data markers not found in {name}")
+        open(html, "w").write(text)
+        print(f"embedded results of {', '.join(res)} into {html}")
 
 
 if __name__ == "__main__":

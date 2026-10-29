@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ISA-L Erasure Code Performance Report - SRF / CWF / EMR / GNR</title>
+<style>
+  :root { --grid: #e5e7eb; --txt: #1f2937; --muted: #6b7280; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: var(--txt); background: #f6f7f9; line-height: 1.6; }
+  header { background: linear-gradient(120deg, #1e3a8a, #2563eb); color: #fff; padding: 30px 48px; }
+  header h1 { margin: 0 0 6px; font-size: 26px; }
+  header p { margin: 0; opacity: .85; }
+  main { max-width: 1200px; margin: 0 auto; padding: 24px; }
+  section { background: #fff; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,.08); padding: 20px 28px; margin-bottom: 22px; }
+  h2 { font-size: 19px; margin: 0 0 12px; border-left: 4px solid #2563eb; padding-left: 10px; }
+  h3 { font-size: 16px; margin: 18px 0 6px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; margin: 8px 0; }
+  th, td { border: 1px solid var(--grid); padding: 4px 8px; text-align: right; }
+  th { background: #f3f4f6; }
+  td:first-child, th:first-child { text-align: left; }
+  .txt td, .txt th { text-align: left; }
+  .note { font-size: 13px; color: var(--muted); }
+  .legend { font-size: 13px; margin: 2px 0 6px; }
+  .legend span { display: inline-block; margin-right: 16px; }
+  .legend i { display: inline-block; width: 18px; height: 4px; margin-right: 5px; vertical-align: 3px; }
+  .legend i.bar { width: 12px; height: 12px; vertical-align: -1px; border-radius: 2px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
+  .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 8px 0 14px; }
+  .kpi { border-radius: 8px; padding: 10px 14px; background: #f8fafc; border-top: 4px solid; }
+  .kpi .t { font-weight: 700; }
+  .kpi .l { font-size: 12.5px; color: var(--muted); }
+  .kpi b { font-size: 18px; }
+  ul { margin: 6px 0; padding-left: 22px; }
+  code { background: #f3f4f6; padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+  svg text { font-size: 12px; fill: #374151; }
+  .warn { background: #fff7ed; border-left: 4px solid #f59e0b; padding: 8px 12px; font-size: 13.5px; margin: 8px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ISA-L Erasure Code Performance Report</h1>
+  <p>Xeon 6780E (SRF) · Xeon 6992E+C (CWF) · Xeon Platinum 8576C (EMR) · Xeon 6767P (GNR) · isa-l 96be773 + erasure_code/bench · 2026-10-29</p>
+</header>
+<main>
+
+<section>
+  <h2>Summary</h2>
+  <div class="kpis" id="kpis"></div>
+  <ul>
+    <li><b>Single core</b>: EMR is fastest (8+4, cache-resident, 50 GB/s of effective data), followed by GNR 37, CWF 21 and SRF 13 GB/s. The P-core lead comes mainly from AVX-512 + GFNI. GNR is slower than EMR per core because it runs AVX-512 + GFNI code at only about 3.09 GHz (EMR: 3.79 GHz). CWF is about 55% faster than SRF, almost entirely from higher work per cycle (IPC 2.09 → 2.95); its clock is only 7% higher.</li>
+    <li><b>Multi-core, data in cache (pure compute)</b>: whole-machine effective throughput is GNR 4.7 TB/s (128 cores) &gt; CWF 4.3 TB/s (one socket, 288 cores) &gt; EMR 3.9 TB/s (112 cores) &gt; SRF 0.96 TB/s (72 cores). At full load CWF and EMR hit the package power limit PL1 and drop to 73% and 70% of their single-core frequency, which matches their scaling efficiency of 72% and 70%. GNR and SRF keep their frequency and scale almost linearly.</li>
+    <li><b>Multi-core, data in memory</b>: all platforms become memory-bandwidth bound. Per socket, effective throughput is CWF 246 GB/s &gt; EMR 179 &gt; GNR 175 &gt; SRF 122 GB/s. Measured memory bandwidth reaches 81% of theoretical on CWF, 74% on EMR, 63% on GNR and 59% on SRF.</li>
+    <li><b>E-cores generate extra read traffic when writing parity</b>: SRF/CWF move about 2.0 bytes of memory traffic per byte of source data encoded, P-cores only about 1.5 bytes once bandwidth is saturated. The difference is the read-for-ownership (RFO) of each parity cache line before it is written.</li>
+    <li><b>SMT does not help EC</b>: running 2 processes per physical core on EMR/GNR lowers cache-resident throughput by 2%–6%. With data in memory it helps by 12%–17% only while memory is not yet saturated, and is neutral at full load.</li>
+    <li>Root-cause analysis: <a href="#analysis">section 10</a>; why CWF lowers its frequency under full load: <a href="#cwf-freq">section 11</a>; per-vCPU comparison of E-cores vs P-core hyper-threads: <a href="#vcpu">section 12</a>.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Test environment and method</h2>
+  <table class="txt" id="t-env"></table>
+  <div class="warn">
+    <b>Two environment caveats:</b><br>
+    1. SRF (srfsp) has only 36 cores online per socket (one per 4-core L2 module), far fewer than the 144 cores of a 6780E. Whole-machine SRF numbers therefore describe this machine, not a fully populated 6780E; single-core numbers are unaffected.<br>
+    2. A qemu VM using about 250 GB runs on SRF NUMA node 1, leaving only about 300 MB free there. Processes on socket 1 have to allocate memory from node 0, so the SRF DRAM results for 64/72 cores are no higher than for 36 cores. Use the single-socket (36-core) result for SRF.
+  </div>
+  <ul class="note">
+    <li>All data was produced by the same script <code>erasure_code/bench/ec_bench.sh</code>. Raw results are in <code>erasure_code/bench/results/{srfsp,cwf,emr06,gnrsp}.txt</code>; this page embeds them via <code>gen_report_data.py</code>.</li>
+    <li>Throughput metric: <b>except for the decode results in section 4, all throughput in this report is "effective data"</b>, i.e. user source data encoded per second = isa-l's native encode bandwidth × k/(k+p). isa-l natively reports encode = (k+p)×chunk/time and decode = (k+e)×chunk/time; raw values are in the result files and the section 1 table.</li>
+    <li>Single-core tests are pinned to CPU 2 with its SMT sibling idle. The single-core "DRAM" tests use a 64 MB chunk (about 1 GB working set, far larger than any L3 here).</li>
+    <li>Multi-core tests: from 1 physical core up to all of them, one independent 8+4 process per core (EMR/GNR also with 2 per core, the second on the SMT sibling), filling the NUMA nodes of socket 0 in CPU-number order before socket 1. The cache workload uses the default chunk (data stays in each core's cache), the dram workload a 16 MB chunk (256 MB per process). The encode benchmark is extended to 8 s and sampled for 3 s starting 5 s after launch:
+      <ul>
+        <li>How frequency, memory bandwidth and power are measured is described in the table below.</li>
+        <li>Only encode results are used: when processes are memory bound, the ones that finish first leave more bandwidth for the rest and inflate their decode results.</li>
+      </ul>
+    </li>
+  </ul>
+
+  <h3 id="measure">How frequency, power, temperature and other metrics are measured</h3>
+  <p class="note">All metrics are collected by the scripts while the test processes run, from the CPU's own hardware counters and model-specific registers (MSRs), not from external instruments. Root or passwordless sudo is required (system-wide perf counting, turbostat and <code>/dev/cpu/*/msr</code>).</p>
+  <table class="txt">
+    <tr><th>Metric</th><th>Command / source</th><th>How it works</th><th>Caveats</th></tr>
+    <tr><td><b>Actual frequency</b> (multi-core, per-core sweep)</td>
+      <td><code>perf stat -x, -C &lt;CPUs in use&gt; -e cycles -- sleep 3</code></td>
+      <td><code>cycles</code> counts core clock cycles while not halted, at the actual clock (including turbo and throttling). perf also reports the summed time the counter ran on those CPUs; frequency = cycles ÷ that time. The test processes keep those CPUs busy, so this is their average actual frequency over the window.</td>
+      <td>An average over the window and over all CPUs in use; per-core differences and sub-second fluctuations are not visible.</td></tr>
+    <tr><td><b>Frequency and IPC</b> (single core, section 5)</td>
+      <td><code>perf stat -e cycles,instructions,task-clock taskset -c 2 erasure_code_perf ...</code></td>
+      <td>Frequency = cycles ÷ task-clock (CPU time of the process); IPC = instructions ÷ cycles.</td>
+      <td>Covers the whole process including untimed work such as generating the test data; the IPC of the 64 MB DRAM row is strongly affected by that.</td></tr>
+    <tr><td><b>Frequency</b> (sustained full load)</td>
+      <td><code>turbostat -S --show Bzy_MHz,PkgTmp,PkgWatt --interval 5</code></td>
+      <td>Bzy_MHz = actual frequency while busy, from the ratio of the APERF/MPERF MSR deltas times the base frequency; consistent with the perf cycles method.</td>
+      <td>-S prints only the system summary row.</td></tr>
+    <tr><td><b>Package power</b> PkgWatt</td>
+      <td><code>turbostat --quiet --show PkgWatt,PkgTmp --interval 2 --num_iterations 1</code></td>
+      <td>Reads the RAPL energy counter MSR_PKG_ENERGY_STATUS (0x611) at the start and end of the interval, converts to joules with MSR_RAPL_POWER_UNIT and divides by time. The summary row is the sum of all sockets.</td>
+      <td>CPU package power (cores + uncore), excluding DIMMs (reported separately as RAMWatt) and not wall power; derived from on-die sensing and models. perf's <code>power/energy-pkg</code> was not used: on SRF it reported about 4,000 W at idle. turbostat occasionally reports a value in the billions of watts when the counter wraps (twice in the CWF sweep); such values are dropped when generating the report.</td></tr>
+    <tr><td><b>Package temperature</b> PkgTmp</td>
+      <td>Same as above (turbostat)</td>
+      <td>Bits 16–22 of IA32_PACKAGE_THERM_STATUS (0x1B1) give how many degrees the package is below its limit; temperature = TjMax − that reading. TjMax comes from MSR_IA32_TEMPERATURE_TARGET (0x1A2) and is 107 °C on CWF.</td>
+      <td>The hottest sensor in the package (hot spot), not case or inlet temperature; value at the end of the window, 1 °C resolution.</td></tr>
+    <tr><td><b>Thermal status</b> (T / L)</td>
+      <td><code>dd if=/dev/cpu/0/msr bs=8 count=1 skip=$((0x1b1)) iflag=skip_bytes</code></td>
+      <td>Status bits of the same register 0x1B1: bit 0 = at the thermal control point (T), bit 10 = power limit currently active (L). Read 4 times during the window and OR-ed.</td>
+      <td>Instantaneous state; 4 samples can miss short events, so the throttle event count below is also used. Needs the <code>msr</code> kernel module.</td></tr>
+    <tr><td><b>Thermal throttle events</b></td>
+      <td><code>/sys/devices/system/cpu/cpu0/thermal_throttle/package_throttle_count</code></td>
+      <td>Kernel count of package-level thermal throttling interrupts; difference before and after each test point.</td>
+      <td>Counts temperature-driven throttling only, not power limiting.</td></tr>
+    <tr><td><b>Memory bandwidth</b></td>
+      <td><code>perf stat -x, -a -e uncore_imc/event=0x05,umask=0xcf/,uncore_imc/event=0x05,umask=0xf0/ ...</code></td>
+      <td>Memory-controller CAS read (umask 0xcf) / write (umask 0xf0) counts × 64 B ÷ time. On Xeon 6 (SRF/GNR/CWF) the two DDR5 sub-channels are event 0x05 and 0x06; the script reads both.</td>
+      <td>The kernel's <code>cas_count_read</code> alias on GNR/CWF covers only one sub-channel and would under-report by half.</td></tr>
+    <tr><td><b>Turbo ratio limits, TDP, power limits, TjMax</b></td>
+      <td>Configuration printed by <code>turbostat --interval 1 --num_iterations 1</code> at start-up; <code>/sys/class/powercap/intel-rapl:0/constraint_*</code></td>
+      <td>MSR_TURBO_RATIO_LIMIT / LIMIT1 (0x1AD/0x1AE, maximum ratio per active-core-count group), MSR_PKG_POWER_INFO (0x614, TDP), MSR_PKG_POWER_LIMIT (PL1/PL2 and time windows), MSR_IA32_TEMPERATURE_TARGET (TjMax).</td>
+      <td>Values as currently configured by BIOS/firmware; they may differ from the official specification.</td></tr>
+  </table>
+  <p class="note">Sampling windows: the multi-core tests of sections 7–9 sample for 3 s starting 5 s after launch (8 s encode benchmark); the per-core sweep in section 11 samples from 1.5 s to 3.5 s (4 s encode benchmark); the sustained full-load test prints every 5 s for 60 s. During every window all test processes are in the timed encode phase.</p>
+</section>
+
+<section>
+  <h2>1. k+p configurations (single core, cache-resident, effective data)</h2>
+  <div id="c-kp"></div>
+  <table id="t-kp"></table>
+  <p class="note">For a given p, effective throughput stays flat or rises slightly as k grows: encoding cost is driven mainly by the number of parity blocks p. The table also lists isa-l's native encode bandwidth for reference.</p>
+</section>
+
+<section>
+  <h2>2. Chunk size (single core, 8+4, effective data)</h2>
+  <div id="c-chunk"></div>
+  <table id="t-chunk"></table>
+  <p class="note">Each run uses 16 chunk-sized buffers (8 source + 4 parity + 4 decode outputs). EMR/GNR have 2 MB of L2 per core; with a 256 KB chunk the working set is about 4 MB, exceeds L2, and throughput drops to about 50%–55%. SRF/CWF have a 4 MB L2 per module (used by a single core in this test) and degrade much more gently.</p>
+</section>
+
+<section>
+  <h2>3. Cache vs DRAM (single core, effective data, DRAM uses a 64 MB chunk)</h2>
+  <div id="c-dram"></div>
+  <table id="t-dram"></table>
+  <p class="note">With data in memory, single-core throughput depends on how many memory requests one core can keep in flight rather than on compute: CWF is the fastest single core here and the P-core advantage largely disappears.</p>
+</section>
+
+<section>
+  <h2>4. Number of lost blocks vs decode (single core, 8+4, cache-resident)</h2>
+  <div id="c-err"></div>
+  <p class="note">Decode work is proportional to the number of lost blocks e, but bandwidth is counted as (k+e), so the reported value rises as e falls.</p>
+</section>
+
+<section>
+  <h2>5. ISA paths (single core, implementation forced, 8+4 cache-resident, effective data)</h2>
+  <div id="c-isa"></div>
+  <table id="t-isa"></table>
+  <p class="note">MHz and IPC are measured with <code>perf stat</code> over the whole process. "Bytes per cycle" = effective data ÷ frequency, i.e. source bytes encoded per clock cycle with frequency differences removed. SRF/CWF do not support AVX-512.</p>
+</section>
+
+<section>
+  <h2>6. SIMD vs plain C (single core, 10+4, cache-resident, effective data)</h2>
+  <table id="t-base"></table>
+</section>
+
+<section>
+  <h2>7. Multi-core scaling: data in cache (pure compute, effective data)</h2>
+  <div id="c-sc-cache"></div>
+  <div class="grid2">
+    <div><h3>Actual average frequency</h3><div id="c-sc-mhz"></div></div>
+    <div><h3>Package power (sum of all sockets)</h3><div id="c-sc-pwr"></div></div>
+  </div>
+  <table id="t-sc-cache"></table>
+  <p class="note">The x axis is the number of physical cores (log scale). Solid lines: 1 process per core; dashed lines: 2 processes per core on EMR/GNR (SMT). "Scaling efficiency" = total throughput ÷ (single-core throughput × cores).</p>
+</section>
+
+<section>
+  <h2>8. Multi-core scaling: data in memory</h2>
+  <div class="grid2">
+    <div><h3>Effective throughput (source data only)</h3><div id="c-sd-data"></div></div>
+    <div><h3>Measured memory bandwidth (read + write)</h3><div id="c-sd-bw"></div></div>
+  </div>
+  <table id="t-sd"></table>
+  <ul class="note">
+    <li>"Memory traffic per source byte" = (read + write) ÷ effective data. Reading only the sources and writing only the parity gives (k+p)/k = 1.5; reading each parity line before writing it (RFO) gives (k+2p)/k = 2.0. With few cores part of the data still hits L3, so the value is lower.</li>
+    <li>Theoretical bandwidth is estimated as DIMMs × transfer rate × 8 B (one DIMM per channel). The steps in the curves are where one NUMA node is full and the next one starts: one node is 28 cores on EMR, 32 on GNR and 96 on CWF.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>9. SMT: 2 processes on one physical core (EMR / GNR, effective data)</h2>
+  <table id="t-smt"></table>
+  <p class="note">Change = (total throughput with 2 processes per core ÷ with 1 process per core) − 1. The single-core DRAM row is not fully comparable: with 1 process part of the 256 MB working set hits L3, with 2 processes (512 MB) almost everything goes to memory.</p>
+</section>
+
+<section id="analysis">
+  <h2>10. Root-cause analysis</h2>
+
+  <h3>10.1 Single core: microarchitecture × frequency × ISA</h3>
+  <table class="txt" id="t-why1"></table>
+  <ul>
+    <li><b>GFNI is the foundation</b>: on all four machines the default GFNI path is 2.4–3.1× faster than the table-lookup path (<code>vpshufb</code>). Without GFNI, AVX-512 has no advantage over AVX2 (effective data EMR 15.8 vs 16.2, GNR 14.2 vs 15.2 GB/s): the lookup instructions are limited by execution ports, so wider vectors do not process more bytes per cycle.</li>
+    <li><b>With AVX-512 + GFNI a P-core encodes about 12–13 source bytes per cycle</b>, 1.4–1.6× its own AVX2 + GFNI path (8.1–8.4 bytes), about 2× a CWF E-core (6.3 bytes) and about 3× an SRF E-core (4.5 bytes).</li>
+    <li><b>GNR is about 25% slower per core than EMR</b>: first frequency — GNR runs AVX-512 + GFNI at only 3.09 GHz (3.29 GHz for its AVX2 path and 3.59 GHz for AVX-512 without GFNI, all below the 3.9 GHz maximum) versus 3.79 GHz on EMR, 18% lower; second IPC — 3.74 on GNR vs 4.09 on EMR for the same instructions, about 9% lower. This GNR frequency does not depend on the number of active cores (about 3.08 GHz on both 1 and 128 cores), so it is a per-instruction-class frequency level rather than a power limit.</li>
+    <li><b>CWF is about 55% faster than SRF</b>: frequency 3.19 vs 2.99 GHz (+7%), IPC 2.95 vs 2.09 (+41%), with the same instruction count. The Darkmont core has wider vector execution and load/store ports.</li>
+  </ul>
+
+  <h3>10.2 Multi-core compute: scaling is set by the power limit</h3>
+  <table class="txt" id="t-why2"></table>
+  <ul>
+    <li><b>CWF and EMR</b>: at full load package power reaches 552 W (PL1 550 W) and 767 W (2 × PL1 385 W); frequency is pushed down to 73% and 70% of the single-core value, and scaling efficiency is exactly 72% and 70%: all of the throughput loss comes from the lower clock.</li>
+    <li><b>GNR</b>: AVX-512 + GFNI code is already capped at about 3.09 GHz. At full load it draws 699 W, just reaching 2 × PL1 350 W, loses only 0.5% of frequency and scales at 98%. So GNR is slower than EMR per core but 21% faster per machine.</li>
+    <li><b>SRF</b>: with only 36 cores per socket online it draws just 162 W per socket at full load, far below PL1 330 W; frequency stays at 2.99 GHz and scaling efficiency is 99%.</li>
+    <li><b>Energy efficiency (cache-resident, full load, effective data ÷ package power)</b>: CWF 7.8 GB/s/W &gt; GNR 6.7 &gt; EMR 5.1 &gt; SRF 3.0 (SRF has only a quarter of its cores enabled, so uncore power is a large share).</li>
+  </ul>
+
+  <h3>10.3 Multi-core memory access: bandwidth, NUMA nodes and RFO</h3>
+  <ul>
+    <li><b>How many cores saturate memory</b>: a single P-core already uses more than ten GB/s of memory bandwidth, and about 16 cores saturate one NUMA node on EMR/GNR (about 130 GB/s). A CWF core also achieves high single-core bandwidth, but 32–64 cores are needed to approach one node's limit (about 165 GB/s). SRF reaches its single-socket limit (about 240 GB/s) at about 32 cores.</li>
+    <li><b>Steps</b>: EMR/GNR/CWF run with SNC, so each socket is split into several NUMA nodes. Processes fill one node before starting the next, giving step-shaped memory-bound curves: bandwidth only doubles when the number of nodes doubles.</li>
+    <li><b>RFO costs E-cores 33% more traffic</b>: isa-l writes parity with regular stores by default. When the target cache line is not in cache, the core first reads it (RFO) and then writes it, so reads = source data + parity data. SRF/CWF move about 2.0 bytes per source byte at every core count. EMR/GNR are also around 1.8–1.9 at low core counts with spare bandwidth, but drop to about 1.5 near saturation, i.e. reads are only the source data. P-cores evidently skip the read before full-line writes when bandwidth is tight (presumably the SpecI2M mechanism of Intel server P-cores). With the same memory bandwidth, E-cores therefore encode 25% less source data.</li>
+    <li><b>Bandwidth utilization</b>: CWF reaches 81% of theoretical (12 channels of DDR5-6400), EMR 74%, GNR 63% and SRF 59% (one socket). The lower GNR and SRF values were not root-caused here; Intel MLC with the same read/write mix would show what these two machines can achieve.</li>
+    <li><b>4 cores slower than 2 on CWF</b>: every 4 CWF cores share a 4 MB L2 module, and cores 0–3 are in the same module. Four 256 MB streams contend for one L2 and one module interface, and effective throughput falls from 24 to 17.5 GB/s; 8 cores (2 modules) recover to 32 GB/s. On E-core platforms, memory-intensive work should be spread across modules.</li>
+    <li><b>SRF gets slower with the second socket</b>: see the environment note above — node 1 memory is taken by a VM, so processes on socket 1 can only use node 0 memory.</li>
+  </ul>
+
+  <h3>10.4 Why SMT does not help</h3>
+  <ul>
+    <li><b>Data in cache</b>: one thread already saturates the vector execution and load/store ports (EMR IPC 4.1, GNR 3.7). A second thread only shares the same ports and also competes for L1/L2, so total throughput falls by 2%–6%. On GNR the measured frequency is actually higher with SMT (3.29 vs 3.09 GHz), but throughput per cycle drops more, so the total still falls; the reason for this frequency behaviour needs further investigation.</li>
+    <li><b>Data in memory</b>: a single thread can keep only a limited number of memory requests in flight. At 8–16 cores, before memory saturates, two threads issue twice as many requests and throughput rises by 12%–17%; once the node or machine is saturated both are equal.</li>
+    <li>Conclusion: EC encoding does not need SMT threads. On P-core platforms the SMT siblings can be left to other work, or EC threads can simply be planned per physical core.</li>
+  </ul>
+
+  <h3>10.5 Recommendations</h3>
+  <ul>
+    <li>Keep the chunk (stripe unit) at 64 KB or below so the k+p blocks stay in L2; this matters most on EMR/GNR.</li>
+    <li>Streaming encode of large data is essentially memory-bandwidth bound. Plan for roughly 120–250 GB/s of effective data per socket and do not reserve many cores for EC: about 16 cores per NUMA node on EMR/GNR and 32–64 on CWF already come close to the limit.</li>
+    <li>On E-core platforms, try isa-l's <code>EC_ALIGNED_ADDR</code> build option: it writes parity with non-temporal stores (<code>vmovntdq</code>), which in theory removes the RFO reads (up to about 25% of traffic). It requires 32/64-byte aligned buffers and keeps the parity out of the cache, so it needs to be measured.</li>
+  </ul>
+</section>
+
+<section id="cwf-freq">
+  <h2>11. CWF per-core sweep: throughput, frequency, power and temperature from 1 to 288 cores</h2>
+  <p class="note">
+    Script <code>erasure_code/bench/freq_sweep.sh</code>, results <code>results/cwf_freq_*.txt</code> and <code>results/cwf_hold.txt</code>. Each point runs one 8+4 process (cache-resident) on each of the first n physical cores, with a 4 s encode benchmark sampled from 1.5 s to 3.5 s: frequency (perf cycles), package power and hottest package temperature (turbostat), the package thermal status register IA32_PACKAGE_THERM_STATUS (T = temperature limit reached, L = power limit active) and package thermal throttle events (see <a href="#measure">measurement methods</a>).
+    The main sweep adds cores in CPU-number order (packed). All 288 points ran back to back in about 35 minutes with only 1 s between points, so the chip and heatsink progressively heat-soaked. Additional runs compare spread placement, different instruction types, a sustained 60 s full load and a cold start (90 s idle before each point).
+  </p>
+  <div id="c-cf-data"></div>
+  <div class="grid2">
+    <div><h3>Actual average frequency</h3><div id="c-cf-mhz"></div></div>
+    <div><h3>Package power</h3><div id="c-cf-pwr"></div></div>
+  </div>
+  <div class="grid2">
+    <div><h3>Hottest package temperature</h3><div id="c-cf-tmp"></div></div>
+    <div><h3>Sustained 60 s full load (288 cores, after 60 s idle)</h3><table id="t-cf-hold"></table></div>
+  </div>
+  <h3>Key points (main sweep, packed, back to back)</h3>
+  <table id="t-cf-key"></table>
+  <h3>Placement / instruction type / cold vs heat-soaked</h3>
+  <table id="t-cf-cmp"></table>
+
+  <h3>11.1 Why the frequency drops: three limits take effect in turn</h3>
+  <table class="txt">
+    <tr><th>CPU parameters (read by turbostat)</th><th>CWF 6992E+C</th><th>For comparison: SRF 6780E</th></tr>
+    <tr><td>Turbo ratio limits (by active cores)</td><td>≤18 cores 3.2 GHz, 19–54 cores 3.0 GHz, ≥55 cores <b>2.9 GHz</b></td><td>3.0 GHz in every group (independent of core count)</td></tr>
+    <tr><td>Base / guaranteed frequency</td><td>2.5 GHz</td><td>2.2 GHz</td></tr>
+    <tr><td>TDP = PL1 (1 s window) / PL2 (11 ms)</td><td>550 W / 660 W</td><td>330 W / 396 W (per socket)</td></tr>
+    <tr><td>TjMax</td><td>107 °C</td><td>110 °C</td></tr>
+    <tr><td>Idle</td><td>48 °C, 43 W</td><td>—</td></tr>
+  </table>
+  <ol>
+    <li><b>Turbo ratio limits: all-core turbo is lower than single-core turbo by design</b>. This CPU reaches 3.2 GHz only with at most 18 active cores and is limited to 2.9 GHz with 55 or more. In the packed sweep 1–23 cores ran at 3.16–3.19 GHz and from 25 cores at 2.97 GHz (the boundary differs slightly from the table's 18 cores, possibly due to how hardware counts active cores); a cold-start 96-core run gave 2.87 GHz (the 2.9 GHz group). SRF 6780E has 3.0 GHz in every turbo group and stayed at 2.99 GHz from 1 to 72 cores, which is likely where the "no frequency drop at full load" expectation comes from; this CWF SKU's turbo table is not flat.</li>
+    <li><b>Power limit PL1 = 550 W: the real limit with all cores active</b>. The AVX2 + GFNI EC code draws a lot of power per core: a cold-start 96-core run at 2.87 GHz already takes 389 W, which extrapolates to about 1,100 W for 288 cores at 2.9 GHz, twice the TDP. With all cores busy, power is therefore held at 550–570 W (PL2 allows short excursions within the sampling window) and frequency falls to 2.33–2.38 GHz, below the 2.5 GHz base frequency. A sustained 60 s full load is stable at 550 W, 2.33 GHz and 98–102 °C with no thermal throttle events, and the thermal status register shows power limiting (L). Even the plain C code reaches 569 W at 288 cores from a cold start, at 2.50 GHz. Base frequency and all-core turbo are specified for the reference workload Intel uses to define TDP; vector-heavy EC encoding draws more power and is outside that guarantee.</li>
+    <li><b>TjMax 107 °C: this machine's cooling is insufficient and, once heat-soaked, the temperature limit triggers before the power limit</b>. During the 35-minute packed sweep, the package reached 107 °C already at 41–44 cores (only about 250 W, far below 550 W) and started throttling frequently. Frequency then kept falling as cores were added, down to 1.98 GHz and 492 W at 288 cores — not even using the power budget — and effective throughput was 17% lower than from a cold start (3.65 vs 4.39 TB/s). At the same core count, a cold start (after 90 s idle) at 96 cores ran at 100 °C, 2.87 GHz with no throttling, while the heat-soaked sweep ran at 107 °C, 2.63 GHz with continuous throttling; after the sweep even the plain C code reached 106–107 °C at 18–19 cores. The heatsink of this Intel AvenueCity reference platform heat-soaks under long high-power runs, so the temperature limit acts before the power limit. A production server with cooling designed for the 550 W TDP should only show the first two limits.</li>
+  </ol>
+  <ul>
+    <li><b>Core placement also affects temperature</b>: adding cores in CPU-number order concentrates heat in a few compute units; with spread placement 96 cores ran at 91 °C versus 100 °C packed (cold start). In the heat-soaked sweep the average frequency briefly rises again at 237–240 and 263–266 cores, exactly where newly added, still cool compute units can run faster.</li>
+    <li><b>Impact on throughput</b>: ideal linear scaling (single core × 288) is about 6.0 TB/s of effective data; cold start or spread placement, power limited, gives about 4.3–4.4 TB/s (72%–73%); the heat-soaked, temperature-limited sweep gives 3.65 TB/s (61%).</li>
+    <li><b>Recommendations</b>: first check this machine's cooling (BIOS fan policy, inlet temperature, heatsink mounting) — reference platforms often default to quiet fan profiles. Spread EC threads across modules and compute units. In real deployments EC is usually memory-bandwidth bound (section 8), so all 288 cores are not needed; fewer cores can run at a higher frequency.</li>
+  </ul>
+</section>
+
+<section id="vcpu">
+  <h2>12. Per-vCPU comparison: E-cores vs P-core hyper-threads (10+4, effective data)</h2>
+  <p class="note">
+    Clouds usually sell virtual CPUs (vCPUs). On a P-core platform 2 vCPUs are the 2 hyper-threads of one physical core; E-core platforms have no SMT, so 2 vCPUs are 2 physical cores. This section runs one 10+4 process on CPU 2 (1 vCPU), then one process on each of 2 vCPUs at the same time and adds up the effective data. Results for 2 physical P-cores and for 2 CWF cores in the same L2 module are shown for reference.
+    The cache-resident case uses the default chunk, the DRAM case a 64 MB chunk (about 1 GB per process). Each case is the best of 3 runs (section 8 of the script).
+  </p>
+  <div class="grid2">
+    <div><h3>Data in cache</h3><div id="c-vc-cache"></div></div>
+    <div><h3>Data in memory</h3><div id="c-vc-dram"></div></div>
+  </div>
+  <table id="t-vc"></table>
+  <h3>Findings</h3>
+  <ul>
+    <li><b>Data in cache</b>: the second P-core hyper-thread brings no gain and costs 5%–6% (EMR 52.5 → 49.9, GNR 38.7 → 36.3 GB/s) because one thread already saturates the vector units. The second vCPU of an E-core platform is a full core, so throughput doubles. Per 2 vCPUs: EMR 49.9 &gt; CWF 42.6 &gt; GNR 36.3 &gt; SRF 27.6 GB/s — two CWF E-cores deliver about 85% of one EMR P-core and 17% more than one GNR P-core.</li>
+    <li><b>Data in memory</b>: P-core SMT gains only 3%–5%, because both threads share the memory requests one physical core can keep in flight. The two E-cores each have their own memory-access resources and nearly double. Per 2 vCPUs: CWF 29.0 &gt; SRF 18.6 &gt; GNR 13.4 ≈ EMR 13.0 GB/s — CWF delivers 2.2× and SRF 1.4× the P-cores.</li>
+    <li><b>CWF module sharing</b>: 2 cores in the same L2 module are as fast as 2 separate cores in cache, but reach only 23.5 GB/s in memory (29.0 when separate); the module's shared L2 and its external bandwidth become the bottleneck. Spread threads across modules when pinning.</li>
+    <li><b>Implication</b>: for vector-heavy, streaming workloads like EC, one vCPU of a P-core platform is worth only half a physical core. Priced per vCPU, E-core platforms (CWF in particular) deliver more EC throughput per vCPU, especially when data is in memory. On GNR the measured frequency is higher with SMT (3.29 vs 3.09 GHz) but throughput per cycle drops more, so the total still falls.</li>
+  </ul>
+</section>
+
+</main>
+
+<script>
+const RESULTS = /*DATA_BEGIN*/{"freq":{"cwf_freq_avx2":[{"n":1.0,"enc":12701.0,"data":8467.0,"mhz":3193.0,"pkgw":129.62,"pkgtmp":93.0,"therm":"-","thr":0.0},{"n":18.0,"enc":225407.0,"data":150271.0,"mhz":3136.0,"pkgw":183.23,"pkgtmp":107.0,"therm":"T","thr":817.0},{"n":19.0,"enc":239577.0,"data":159718.0,"mhz":3163.0,"pkgw":186.62,"pkgtmp":106.0,"therm":"T","thr":627.0},{"n":36.0,"enc":426194.0,"data":284129.0,"mhz":2962.0,"pkgw":220.39,"pkgtmp":107.0,"therm":"T","thr":336.0},{"n":37.0,"enc":439149.0,"data":292766.0,"mhz":2974.0,"pkgw":225.14,"pkgtmp":107.0,"therm":"T","thr":327.0},{"n":54.0,"enc":621349.0,"data":414233.0,"mhz":2871.0,"pkgw":256.59,"pkgtmp":106.0,"therm":"-","thr":342.0},{"n":55.0,"enc":635908.0,"data":423939.0,"mhz":2886.0,"pkgw":259.84,"pkgtmp":107.0,"therm":"T","thr":318.0},{"n":72.0,"enc":825178.0,"data":550119.0,"mhz":2859.0,"pkgw":296.47,"pkgtmp":107.0,"therm":"T","thr":308.0},{"n":96.0,"enc":1068713.0,"data":712475.0,"mhz":2781.0,"pkgw":336.24,"pkgtmp":106.0,"therm":"T","thr":345.0},{"n":128.0,"enc":1399180.0,"data":932787.0,"mhz":2726.0,"pkgw":392.01,"pkgtmp":107.0,"therm":"T","thr":464.0},{"n":160.0,"enc":1695642.0,"data":1130428.0,"mhz":2637.0,"pkgw":432.21,"pkgtmp":107.0,"therm":"T","thr":440.0},{"n":192.0,"enc":1950514.0,"data":1300343.0,"mhz":2537.0,"pkgw":459.69,"pkgtmp":107.0,"therm":"T","thr":572.0},{"n":224.0,"enc":2249752.0,"data":1499835.0,"mhz":2507.0,"pkgw":511.25,"pkgtmp":107.0,"therm":"T","thr":618.0},{"n":256.0,"enc":2506959.0,"data":1671306.0,"mhz":2452.0,"pkgw":543.82,"pkgtmp":107.0,"therm":"T","thr":599.0},{"n":288.0,"enc":2759392.0,"data":1839595.0,"mhz":2432.0,"pkgw":559.84,"pkgtmp":107.0,"therm":"TL","thr":578.0}],"cwf_freq_base":[{"n":1.0,"enc":344.0,"data":246.0,"mhz":3193.0,"pkgw":128.58,"pkgtmp":96.0,"therm":"-","thr":0.0},{"n":18.0,"enc":5873.0,"data":4195.0,"mhz":3045.0,"pkgw":180.46,"pkgtmp":106.0,"therm":"-","thr":938.0},{"n":19.0,"enc":6255.0,"data":4468.0,"mhz":3073.0,"pkgw":184.24,"pkgtmp":107.0,"therm":"T","thr":913.0},{"n":36.0,"enc":11135.0,"data":7954.0,"mhz":2884.0,"pkgw":218.93,"pkgtmp":106.0,"therm":"T","thr":626.0},{"n":37.0,"enc":11483.0,"data":8202.0,"mhz":2896.0,"pkgw":222.7,"pkgtmp":106.0,"therm":"-","thr":565.0},{"n":54.0,"enc":16224.0,"data":11589.0,"mhz":2799.0,"pkgw":255.04,"pkgtmp":107.0,"therm":"T","thr":523.0},{"n":55.0,"enc":16577.0,"data":11841.0,"mhz":2808.0,"pkgw":258.69,"pkgtmp":106.0,"therm":"T","thr":519.0},{"n":72.0,"enc":21434.0,"data":15310.0,"mhz":2774.0,"pkgw":294.54,"pkgtmp":107.0,"therm":"T","thr":457.0},{"n":96.0,"enc":27802.0,"data":19859.0,"mhz":2694.0,"pkgw":334.35,"pkgtmp":107.0,"therm":"-","thr":297.0},{"n":128.0,"enc":36273.0,"data":25909.0,"mhz":2640.0,"pkgw":388.73,"pkgtmp":107.0,"therm":"-","thr":519.0},{"n":160.0,"enc":43913.0,"data":31366.0,"mhz":2558.0,"pkgw":429.02,"pkgtmp":107.0,"therm":"T","thr":468.0},{"n":192.0,"enc":50703.0,"data":36216.0,"mhz":2468.0,"pkgw":460.25,"pkgtmp":107.0,"therm":"T","thr":553.0},{"n":224.0,"enc":58247.0,"data":41605.0,"mhz":2429.0,"pkgw":507.58,"pkgtmp":107.0,"therm":"T","thr":571.0},{"n":256.0,"enc":65084.0,"data":46489.0,"mhz":2378.0,"pkgw":542.28,"pkgtmp":107.0,"therm":"T","thr":593.0},{"n":288.0,"enc":71543.0,"data":51102.0,"mhz":2332.0,"pkgw":559.34,"pkgtmp":107.0,"therm":"T","thr":567.0}],"cwf_freq_base_cold":[{"n":18.0,"enc":6118.0,"data":4370.0,"mhz":3171.0,"pkgw":174.69,"pkgtmp":87.0,"therm":"-","thr":0.0},{"n":96.0,"enc":29543.0,"data":21102.0,"mhz":2872.0,"pkgw":359.26,"pkgtmp":98.0,"therm":"-","thr":0.0},{"n":288.0,"enc":76925.0,"data":54946.0,"mhz":2501.0,"pkgw":569.29,"pkgtmp":91.0,"therm":"L","thr":0.0}],"cwf_freq_ec":[{"n":1.0,"enc":31326.0,"data":20884.0,"mhz":3193.0,"pkgw":114.77,"pkgtmp":59.0,"therm":"-","thr":0.0},{"n":2.0,"enc":62277.0,"data":41518.0,"mhz":3193.0,"pkgw":119.86,"pkgtmp":63.0,"therm":"-","thr":0.0},{"n":3.0,"enc":92892.0,"data":61928.0,"mhz":3186.0,"pkgw":126.16,"pkgtmp":66.0,"therm":"-","thr":0.0},{"n":4.0,"enc":122601.0,"data":81734.0,"mhz":3170.0,"pkgw":127.03,"pkgtmp":72.0,"therm":"-","thr":0.0},{"n":5.0,"enc":152486.0,"data":101657.0,"mhz":3174.0,"pkgw":132.85,"pkgtmp":74.0,"therm":"-","thr":0.0},{"n":6.0,"enc":184798.0,"data":123199.0,"mhz":3178.0,"pkgw":138.72,"pkgtmp":76.0,"therm":"-","thr":0.0},{"n":7.0,"enc":215025.0,"data":143350.0,"mhz":3176.0,"pkgw":141.08,"pkgtmp":76.0,"therm":"-","thr":0.0},{"n":8.0,"enc":243861.0,"data":162574.0,"mhz":3170.0,"pkgw":145.85,"pkgtmp":79.0,"therm":"-","thr":0.0},{"n":9.0,"enc":273897.0,"data":182598.0,"mhz":3171.0,"pkgw":146.77,"pkgtmp":80.0,"therm":"-","thr":0.0},{"n":10.0,"enc":306843.0,"data":204562.0,"mhz":3174.0,"pkgw":151.94,"pkgtmp":81.0,"therm":"-","thr":0.0},{"n":11.0,"enc":337874.0,"data":225249.0,"mhz":3174.0,"pkgw":158.09,"pkgtmp":84.0,"therm":"-","thr":0.0},{"n":12.0,"enc":367706.0,"data":245137.0,"mhz":3170.0,"pkgw":158.74,"pkgtmp":85.0,"therm":"-","thr":0.0},{"n":13.0,"enc":395438.0,"data":263625.0,"mhz":3170.0,"pkgw":165.06,"pkgtmp":85.0,"therm":"-","thr":0.0},{"n":14.0,"enc":427373.0,"data":284915.0,"mhz":3173.0,"pkgw":168.12,"pkgtmp":86.0,"therm":"-","thr":0.0},{"n":15.0,"enc":458793.0,"data":305862.0,"mhz":3173.0,"pkgw":171.88,"pkgtmp":86.0,"therm":"-","thr":0.0},{"n":16.0,"enc":488380.0,"data":325587.0,"mhz":3169.0,"pkgw":177.7,"pkgtmp":88.0,"therm":"-","thr":0.0},{"n":17.0,"enc":520419.0,"data":346946.0,"mhz":3170.0,"pkgw":179.75,"pkgtmp":89.0,"therm":"-","thr":0.0},{"n":18.0,"enc":551028.0,"data":367352.0,"mhz":3171.0,"pkgw":184.69,"pkgtmp":91.0,"therm":"-","thr":0.0},{"n":19.0,"enc":582319.0,"data":388213.0,"mhz":3171.0,"pkgw":189.98,"pkgtmp":92.0,"therm":"-","thr":0.0},{"n":20.0,"enc":610970.0,"data":407313.0,"mhz":3167.0,"pkgw":191.76,"pkgtmp":93.0,"therm":"-","thr":0.0},{"n":21.0,"enc":635359.0,"data":423573.0,"mhz":3164.0,"pkgw":198.74,"pkgtmp":95.0,"therm":"-","thr":0.0},{"n":22.0,"enc":654862.0,"data":436575.0,"mhz":3163.0,"pkgw":198.57,"pkgtmp":96.0,"therm":"-","thr":0.0},{"n":23.0,"enc":700175.0,"data":466783.0,"mhz":3155.0,"pkgw":207.16,"pkgtmp":97.0,"therm":"-","thr":0.0},{"n":24.0,"enc":719737.0,"data":479825.0,"mhz":3103.0,"pkgw":205.97,"pkgtmp":94.0,"therm":"-","thr":0.0},{"n":25.0,"enc":705341.0,"data":470227.0,"mhz":2972.0,"pkgw":197.27,"pkgtmp":89.0,"therm":"-","thr":0.0},{"n":26.0,"enc":745931.0,"data":497287.0,"mhz":2974.0,"pkgw":198.0,"pkgtmp":90.0,"therm":"-","thr":0.0},{"n":27.0,"enc":770563.0,"data":513709.0,"mhz":2973.0,"pkgw":203.85,"pkgtmp":91.0,"therm":"-","thr":0.0},{"n":28.0,"enc":788298.0,"data":525532.0,"mhz":2972.0,"pkgw":208.65,"pkgtmp":91.0,"therm":"-","thr":0.0},{"n":29.0,"enc":830139.0,"data":553426.0,"mhz":2972.0,"pkgw":206.06,"pkgtmp":91.0,"therm":"-","thr":0.0},{"n":30.0,"enc":855817.0,"data":570545.0,"mhz":2973.0,"pkgw":215.55,"pkgtmp":92.0,"therm":"-","thr":0.0},{"n":31.0,"enc":874645.0,"data":583097.0,"mhz":2973.0,"pkgw":217.84,"pkgtmp":93.0,"therm":"-","thr":0.0},{"n":32.0,"enc":893254.0,"data":595503.0,"mhz":2972.0,"pkgw":217.1,"pkgtmp":94.0,"therm":"-","thr":0.0},{"n":33.0,"enc":940401.0,"data":626934.0,"mhz":2972.0,"pkgw":224.28,"pkgtmp":94.0,"therm":"-","thr":0.0},{"n":34.0,"enc":973556.0,"data":649037.0,"mhz":2973.0,"pkgw":225.59,"pkgtmp":95.0,"therm":"-","thr":0.0},{"n":35.0,"enc":1005612.0,"data":670408.0,"mhz":2973.0,"pkgw":234.87,"pkgtmp":96.0,"therm":"-","thr":0.0},{"n":36.0,"enc":1008288.0,"data":672192.0,"mhz":2972.0,"pkgw":230.46,"pkgtmp":96.0,"therm":"-","thr":0.0},{"n":37.0,"enc":1037285.0,"data":691523.0,"mhz":2973.0,"pkgw":235.75,"pkgtmp":98.0,"therm":"-","thr":0.0},{"n":38.0,"enc":1059544.0,"data":706363.0,"mhz":2973.0,"pkgw":236.19,"pkgtmp":99.0,"therm":"-","thr":0.0},{"n":39.0,"enc":1089395.0,"data":726263.0,"mhz":2973.0,"pkgw":241.64,"pkgtmp":100.0,"therm":"-","thr":0.0},{"n":40.0,"enc":1120138.0,"data":746759.0,"mhz":2972.0,"pkgw":243.42,"pkgtmp":101.0,"therm":"-","thr":0.0},{"n":41.0,"enc":1156109.0,"data":770739.0,"mhz":2972.0,"pkgw":249.34,"pkgtmp":103.0,"therm":"-","thr":1.0},{"n":42.0,"enc":1178659.0,"data":785773.0,"mhz":2973.0,"pkgw":251.04,"pkgtmp":105.0,"therm":"-","thr":360.0},{"n":43.0,"enc":1215514.0,"data":810343.0,"mhz":2973.0,"pkgw":256.47,"pkgtmp":106.0,"therm":"-","thr":317.0},{"n":44.0,"enc":1233467.0,"data":822311.0,"mhz":2968.0,"pkgw":260.33,"pkgtmp":107.0,"therm":"-","thr":498.0},{"n":45.0,"enc":1262190.0,"data":841460.0,"mhz":2962.0,"pkgw":263.04,"pkgtmp":107.0,"therm":"-","thr":355.0},{"n":46.0,"enc":1295589.0,"data":863726.0,"mhz":2955.0,"pkgw":264.92,"pkgtmp":106.0,"therm":"T","thr":324.0},{"n":47.0,"enc":1326504.0,"data":884336.0,"mhz":2950.0,"pkgw":268.59,"pkgtmp":107.0,"therm":"-","thr":416.0},{"n":48.0,"enc":1346854.0,"data":897903.0,"mhz":2943.0,"pkgw":270.66,"pkgtmp":107.0,"therm":"-","thr":364.0},{"n":49.0,"enc":1388113.0,"data":925409.0,"mhz":2933.0,"pkgw":273.3,"pkgtmp":107.0,"therm":"T","thr":402.0},{"n":50.0,"enc":1401960.0,"data":934640.0,"mhz":2906.0,"pkgw":277.66,"pkgtmp":107.0,"therm":"-","thr":272.0},{"n":51.0,"enc":1404608.0,"data":936405.0,"mhz":2895.0,"pkgw":276.2,"pkgtmp":107.0,"therm":"T","thr":488.0},{"n":52.0,"enc":1437802.0,"data":958535.0,"mhz":2916.0,"pkgw":279.51,"pkgtmp":107.0,"therm":"-","thr":415.0},{"n":53.0,"enc":1483125.0,"data":988750.0,"mhz":2902.0,"pkgw":285.83,"pkgtmp":107.0,"therm":"-","thr":306.0},{"n":54.0,"enc":1504543.0,"data":1003029.0,"mhz":2885.0,"pkgw":285.83,"pkgtmp":107.0,"therm":"T","thr":298.0},{"n":55.0,"enc":1507206.0,"data":1004804.0,"mhz":2881.0,"pkgw":283.76,"pkgtmp":107.0,"therm":"T","thr":550.0},{"n":56.0,"enc":1552051.0,"data":1034701.0,"mhz":2905.0,"pkgw":289.61,"pkgtmp":107.0,"therm":"-","thr":484.0},{"n":57.0,"enc":1576252.0,"data":1050835.0,"mhz":2898.0,"pkgw":292.15,"pkgtmp":107.0,"therm":"T","thr":512.0},{"n":58.0,"enc":1609736.0,"data":1073157.0,"mhz":2899.0,"pkgw":295.3,"pkgtmp":107.0,"therm":"-","thr":445.0},{"n":59.0,"enc":1633135.0,"data":1088757.0,"mhz":2891.0,"pkgw":297.28,"pkgtmp":106.0,"therm":"T","thr":465.0},{"n":60.0,"enc":1653364.0,"data":1102243.0,"mhz":2883.0,"pkgw":298.49,"pkgtmp":106.0,"therm":"-","thr":397.0},{"n":61.0,"enc":1681267.0,"data":1120845.0,"mhz":2881.0,"pkgw":301.49,"pkgtmp":107.0,"therm":"T","thr":451.0},{"n":62.0,"enc":1718821.0,"data":1145881.0,"mhz":2880.0,"pkgw":null,"pkgtmp":107.0,"therm":"-","thr":434.0},{"n":63.0,"enc":1740804.0,"data":1160536.0,"mhz":2864.0,"pkgw":310.51,"pkgtmp":106.0,"therm":"T","thr":273.0},{"n":64.0,"enc":1734159.0,"data":1156106.0,"mhz":2833.0,"pkgw":308.39,"pkgtmp":106.0,"therm":"T","thr":444.0},{"n":65.0,"enc":1787006.0,"data":1191337.0,"mhz":2846.0,"pkgw":307.48,"pkgtmp":107.0,"therm":"T","thr":531.0},{"n":66.0,"enc":1806950.0,"data":1204633.0,"mhz":2841.0,"pkgw":312.37,"pkgtmp":107.0,"therm":"-","thr":253.0},{"n":67.0,"enc":1807250.0,"data":1204833.0,"mhz":2805.0,"pkgw":307.22,"pkgtmp":106.0,"therm":"T","thr":339.0},{"n":68.0,"enc":1828736.0,"data":1219157.0,"mhz":2793.0,"pkgw":311.44,"pkgtmp":107.0,"therm":"-","thr":246.0},{"n":69.0,"enc":1857159.0,"data":1238106.0,"mhz":2788.0,"pkgw":312.51,"pkgtmp":107.0,"therm":"-","thr":297.0},{"n":70.0,"enc":1873799.0,"data":1249199.0,"mhz":2782.0,"pkgw":313.69,"pkgtmp":107.0,"therm":"-","thr":328.0},{"n":71.0,"enc":1887750.0,"data":1258500.0,"mhz":2775.0,"pkgw":314.75,"pkgtmp":107.0,"therm":"T","thr":348.0},{"n":72.0,"enc":1916249.0,"data":1277499.0,"mhz":2763.0,"pkgw":312.92,"pkgtmp":107.0,"therm":"T","thr":256.0},{"n":73.0,"enc":1945590.0,"data":1297060.0,"mhz":2766.0,"pkgw":316.93,"pkgtmp":107.0,"therm":"-","thr":244.0},{"n":74.0,"enc":1967278.0,"data":1311519.0,"mhz":2761.0,"pkgw":317.85,"pkgtmp":107.0,"therm":"-","thr":247.0},{"n":75.0,"enc":1991802.0,"data":1327868.0,"mhz":2754.0,"pkgw":319.97,"pkgtmp":107.0,"therm":"T","thr":224.0},{"n":76.0,"enc":2017781.0,"data":1345187.0,"mhz":2742.0,"pkgw":319.85,"pkgtmp":107.0,"therm":"-","thr":220.0},{"n":77.0,"enc":2039499.0,"data":1359666.0,"mhz":2744.0,"pkgw":323.38,"pkgtmp":107.0,"therm":"T","thr":231.0},{"n":78.0,"enc":2069601.0,"data":1379734.0,"mhz":2744.0,"pkgw":326.27,"pkgtmp":107.0,"therm":"-","thr":227.0},{"n":79.0,"enc":2088637.0,"data":1392425.0,"mhz":2741.0,"pkgw":327.19,"pkgtmp":107.0,"therm":"-","thr":248.0},{"n":80.0,"enc":2112385.0,"data":1408257.0,"mhz":2736.0,"pkgw":328.62,"pkgtmp":106.0,"therm":"T","thr":224.0},{"n":81.0,"enc":2131133.0,"data":1420755.0,"mhz":2726.0,"pkgw":329.68,"pkgtmp":107.0,"therm":"-","thr":232.0},{"n":82.0,"enc":2150786.0,"data":1433857.0,"mhz":2711.0,"pkgw":329.04,"pkgtmp":107.0,"therm":"T","thr":251.0},{"n":83.0,"enc":2175154.0,"data":1450103.0,"mhz":2701.0,"pkgw":328.97,"pkgtmp":107.0,"therm":"T","thr":253.0},{"n":84.0,"enc":2187814.0,"data":1458543.0,"mhz":2697.0,"pkgw":330.12,"pkgtmp":107.0,"therm":"-","thr":215.0},{"n":85.0,"enc":2210514.0,"data":1473676.0,"mhz":2688.0,"pkgw":331.58,"pkgtmp":107.0,"therm":"T","thr":207.0},{"n":86.0,"enc":2227313.0,"data":1484875.0,"mhz":2687.0,"pkgw":333.67,"pkgtmp":107.0,"therm":"T","thr":234.0},{"n":87.0,"enc":2255247.0,"data":1503498.0,"mhz":2680.0,"pkgw":335.3,"pkgtmp":106.0,"therm":"T","thr":218.0},{"n":88.0,"enc":2276056.0,"data":1517371.0,"mhz":2674.0,"pkgw":336.39,"pkgtmp":107.0,"therm":"-","thr":187.0},{"n":89.0,"enc":2294239.0,"data":1529493.0,"mhz":2666.0,"pkgw":338.13,"pkgtmp":107.0,"therm":"-","thr":220.0},{"n":90.0,"enc":2318643.0,"data":1545762.0,"mhz":2665.0,"pkgw":339.82,"pkgtmp":107.0,"therm":"-","thr":216.0},{"n":91.0,"enc":2332367.0,"data":1554911.0,"mhz":2657.0,"pkgw":339.94,"pkgtmp":107.0,"therm":"-","thr":220.0},{"n":92.0,"enc":2354108.0,"data":1569405.0,"mhz":2652.0,"pkgw":341.93,"pkgtmp":107.0,"therm":"T","thr":215.0},{"n":93.0,"enc":2369935.0,"data":1579957.0,"mhz":2645.0,"pkgw":342.6,"pkgtmp":106.0,"therm":"T","thr":236.0},{"n":94.0,"enc":2398288.0,"data":1598859.0,"mhz":2638.0,"pkgw":343.58,"pkgtmp":106.0,"therm":"T","thr":249.0},{"n":95.0,"enc":2419115.0,"data":1612743.0,"mhz":2627.0,"pkgw":343.29,"pkgtmp":107.0,"therm":"T","thr":244.0},{"n":96.0,"enc":2444565.0,"data":1629710.0,"mhz":2630.0,"pkgw":346.57,"pkgtmp":107.0,"therm":"-","thr":241.0},{"n":97.0,"enc":2463567.0,"data":1642378.0,"mhz":2629.0,"pkgw":349.05,"pkgtmp":107.0,"therm":"T","thr":238.0},{"n":98.0,"enc":2485131.0,"data":1656754.0,"mhz":2624.0,"pkgw":349.92,"pkgtmp":107.0,"therm":"T","thr":252.0},{"n":99.0,"enc":2505508.0,"data":1670339.0,"mhz":2622.0,"pkgw":351.08,"pkgtmp":107.0,"therm":"T","thr":252.0},{"n":100.0,"enc":2533046.0,"data":1688697.0,"mhz":2616.0,"pkgw":353.24,"pkgtmp":106.0,"therm":"-","thr":226.0},{"n":101.0,"enc":2559364.0,"data":1706243.0,"mhz":2620.0,"pkgw":355.94,"pkgtmp":107.0,"therm":"-","thr":211.0},{"n":102.0,"enc":2578888.0,"data":1719259.0,"mhz":2621.0,"pkgw":359.1,"pkgtmp":107.0,"therm":"-","thr":217.0},{"n":103.0,"enc":2607986.0,"data":1738657.0,"mhz":2618.0,"pkgw":361.47,"pkgtmp":107.0,"therm":"T","thr":280.0},{"n":104.0,"enc":2616854.0,"data":1744569.0,"mhz":2613.0,"pkgw":361.81,"pkgtmp":107.0,"therm":"-","thr":435.0},{"n":105.0,"enc":2638684.0,"data":1759123.0,"mhz":2607.0,"pkgw":363.86,"pkgtmp":106.0,"therm":"-","thr":418.0},{"n":106.0,"enc":2660075.0,"data":1773383.0,"mhz":2600.0,"pkgw":364.23,"pkgtmp":107.0,"therm":"-","thr":478.0},{"n":107.0,"enc":2680533.0,"data":1787022.0,"mhz":2591.0,"pkgw":363.86,"pkgtmp":107.0,"therm":"T","thr":436.0},{"n":108.0,"enc":2690212.0,"data":1793475.0,"mhz":2577.0,"pkgw":362.04,"pkgtmp":107.0,"therm":"-","thr":489.0},{"n":109.0,"enc":2706212.0,"data":1804141.0,"mhz":2577.0,"pkgw":365.01,"pkgtmp":107.0,"therm":"T","thr":508.0},{"n":110.0,"enc":2725960.0,"data":1817307.0,"mhz":2570.0,"pkgw":365.54,"pkgtmp":107.0,"therm":"T","thr":542.0},{"n":111.0,"enc":2744806.0,"data":1829871.0,"mhz":2561.0,"pkgw":365.63,"pkgtmp":107.0,"therm":"-","thr":508.0},{"n":112.0,"enc":2759376.0,"data":1839584.0,"mhz":2555.0,"pkgw":366.86,"pkgtmp":107.0,"therm":"T","thr":536.0},{"n":113.0,"enc":2777894.0,"data":1851929.0,"mhz":2558.0,"pkgw":369.15,"pkgtmp":106.0,"therm":"T","thr":562.0},{"n":114.0,"enc":2809621.0,"data":1873081.0,"mhz":2554.0,"pkgw":370.03,"pkgtmp":107.0,"therm":"T","thr":561.0},{"n":115.0,"enc":2825060.0,"data":1883373.0,"mhz":2554.0,"pkgw":372.44,"pkgtmp":107.0,"therm":"T","thr":570.0},{"n":116.0,"enc":2843583.0,"data":1895722.0,"mhz":2545.0,"pkgw":378.52,"pkgtmp":107.0,"therm":"T","thr":510.0},{"n":117.0,"enc":2858587.0,"data":1905725.0,"mhz":2539.0,"pkgw":376.37,"pkgtmp":107.0,"therm":"T","thr":528.0},{"n":118.0,"enc":2878790.0,"data":1919193.0,"mhz":2533.0,"pkgw":378.07,"pkgtmp":107.0,"therm":"T","thr":539.0},{"n":119.0,"enc":2891192.0,"data":1927461.0,"mhz":2530.0,"pkgw":380.6,"pkgtmp":107.0,"therm":"T","thr":542.0},{"n":120.0,"enc":2911855.0,"data":1941237.0,"mhz":2521.0,"pkgw":378.26,"pkgtmp":107.0,"therm":"T","thr":524.0},{"n":121.0,"enc":2926377.0,"data":1950918.0,"mhz":2510.0,"pkgw":378.93,"pkgtmp":107.0,"therm":"T","thr":512.0},{"n":122.0,"enc":2942522.0,"data":1961681.0,"mhz":2507.0,"pkgw":381.84,"pkgtmp":107.0,"therm":"T","thr":540.0},{"n":123.0,"enc":2963991.0,"data":1975994.0,"mhz":2499.0,"pkgw":380.75,"pkgtmp":106.0,"therm":"T","thr":515.0},{"n":124.0,"enc":2969547.0,"data":1979698.0,"mhz":2488.0,"pkgw":377.87,"pkgtmp":107.0,"therm":"T","thr":468.0},{"n":125.0,"enc":2987944.0,"data":1991963.0,"mhz":2480.0,"pkgw":379.51,"pkgtmp":107.0,"therm":"T","thr":441.0},{"n":126.0,"enc":3007951.0,"data":2005301.0,"mhz":2479.0,"pkgw":381.69,"pkgtmp":107.0,"therm":"T","thr":516.0},{"n":127.0,"enc":3025045.0,"data":2016697.0,"mhz":2473.0,"pkgw":378.26,"pkgtmp":107.0,"therm":"T","thr":579.0},{"n":128.0,"enc":3040454.0,"data":2026969.0,"mhz":2467.0,"pkgw":384.1,"pkgtmp":107.0,"therm":"T","thr":553.0},{"n":129.0,"enc":3053829.0,"data":2035886.0,"mhz":2464.0,"pkgw":383.97,"pkgtmp":107.0,"therm":"T","thr":574.0},{"n":130.0,"enc":3078132.0,"data":2052088.0,"mhz":2461.0,"pkgw":383.52,"pkgtmp":107.0,"therm":"-","thr":544.0},{"n":131.0,"enc":3096732.0,"data":2064488.0,"mhz":2458.0,"pkgw":384.31,"pkgtmp":107.0,"therm":"T","thr":501.0},{"n":132.0,"enc":3123192.0,"data":2082128.0,"mhz":2457.0,"pkgw":386.53,"pkgtmp":107.0,"therm":"T","thr":505.0},{"n":133.0,"enc":3141155.0,"data":2094103.0,"mhz":2449.0,"pkgw":387.39,"pkgtmp":107.0,"therm":"T","thr":473.0},{"n":134.0,"enc":3158225.0,"data":2105483.0,"mhz":2446.0,"pkgw":390.37,"pkgtmp":107.0,"therm":"-","thr":481.0},{"n":135.0,"enc":3173686.0,"data":2115791.0,"mhz":2441.0,"pkgw":391.49,"pkgtmp":107.0,"therm":"T","thr":481.0},{"n":136.0,"enc":3188716.0,"data":2125811.0,"mhz":2435.0,"pkgw":391.79,"pkgtmp":107.0,"therm":"T","thr":457.0},{"n":137.0,"enc":3203690.0,"data":2135793.0,"mhz":2432.0,"pkgw":390.5,"pkgtmp":107.0,"therm":"-","thr":492.0},{"n":138.0,"enc":3226121.0,"data":2150747.0,"mhz":2427.0,"pkgw":391.09,"pkgtmp":107.0,"therm":"T","thr":487.0},{"n":139.0,"enc":3239224.0,"data":2159483.0,"mhz":2425.0,"pkgw":392.5,"pkgtmp":107.0,"therm":"T","thr":466.0},{"n":140.0,"enc":3251104.0,"data":2167403.0,"mhz":2418.0,"pkgw":392.27,"pkgtmp":107.0,"therm":"T","thr":425.0},{"n":141.0,"enc":3270114.0,"data":2180076.0,"mhz":2412.0,"pkgw":393.2,"pkgtmp":107.0,"therm":"T","thr":420.0},{"n":142.0,"enc":3298834.0,"data":2199223.0,"mhz":2408.0,"pkgw":394.44,"pkgtmp":107.0,"therm":"-","thr":442.0},{"n":143.0,"enc":3301413.0,"data":2200942.0,"mhz":2398.0,"pkgw":393.11,"pkgtmp":106.0,"therm":"T","thr":402.0},{"n":144.0,"enc":3315230.0,"data":2210153.0,"mhz":2394.0,"pkgw":393.71,"pkgtmp":107.0,"therm":"-","thr":357.0},{"n":145.0,"enc":3328580.0,"data":2219053.0,"mhz":2384.0,"pkgw":394.7,"pkgtmp":107.0,"therm":"-","thr":360.0},{"n":146.0,"enc":3352079.0,"data":2234719.0,"mhz":2380.0,"pkgw":394.31,"pkgtmp":107.0,"therm":"T","thr":384.0},{"n":147.0,"enc":3365260.0,"data":2243507.0,"mhz":2372.0,"pkgw":394.06,"pkgtmp":107.0,"therm":"T","thr":343.0},{"n":148.0,"enc":3373372.0,"data":2248915.0,"mhz":2364.0,"pkgw":394.28,"pkgtmp":107.0,"therm":"T","thr":443.0},{"n":149.0,"enc":3395206.0,"data":2263471.0,"mhz":2362.0,"pkgw":392.97,"pkgtmp":107.0,"therm":"T","thr":406.0},{"n":150.0,"enc":3417434.0,"data":2278289.0,"mhz":2364.0,"pkgw":393.74,"pkgtmp":107.0,"therm":"T","thr":393.0},{"n":151.0,"enc":3432544.0,"data":2288363.0,"mhz":2361.0,"pkgw":394.77,"pkgtmp":107.0,"therm":"T","thr":396.0},{"n":152.0,"enc":3454184.0,"data":2302789.0,"mhz":2357.0,"pkgw":395.68,"pkgtmp":107.0,"therm":"T","thr":370.0},{"n":153.0,"enc":3478890.0,"data":2319260.0,"mhz":2356.0,"pkgw":398.09,"pkgtmp":107.0,"therm":"T","thr":411.0},{"n":154.0,"enc":3499549.0,"data":2333033.0,"mhz":2357.0,"pkgw":399.45,"pkgtmp":107.0,"therm":"-","thr":404.0},{"n":155.0,"enc":3505592.0,"data":2337061.0,"mhz":2355.0,"pkgw":399.52,"pkgtmp":107.0,"therm":"T","thr":400.0},{"n":156.0,"enc":3528199.0,"data":2352133.0,"mhz":2348.0,"pkgw":400.4,"pkgtmp":107.0,"therm":"T","thr":404.0},{"n":157.0,"enc":3545016.0,"data":2363344.0,"mhz":2345.0,"pkgw":401.4,"pkgtmp":107.0,"therm":"-","thr":374.0},{"n":158.0,"enc":3566280.0,"data":2377520.0,"mhz":2344.0,"pkgw":402.49,"pkgtmp":107.0,"therm":"T","thr":423.0},{"n":159.0,"enc":3589804.0,"data":2393203.0,"mhz":2345.0,"pkgw":404.68,"pkgtmp":107.0,"therm":"-","thr":395.0},{"n":160.0,"enc":3605663.0,"data":2403775.0,"mhz":2341.0,"pkgw":405.46,"pkgtmp":107.0,"therm":"-","thr":399.0},{"n":161.0,"enc":3618581.0,"data":2412387.0,"mhz":2333.0,"pkgw":405.2,"pkgtmp":107.0,"therm":"-","thr":420.0},{"n":162.0,"enc":3630534.0,"data":2420356.0,"mhz":2328.0,"pkgw":405.37,"pkgtmp":107.0,"therm":"-","thr":388.0},{"n":163.0,"enc":3640740.0,"data":2427160.0,"mhz":2321.0,"pkgw":405.53,"pkgtmp":107.0,"therm":"T","thr":414.0},{"n":164.0,"enc":3654907.0,"data":2436605.0,"mhz":2316.0,"pkgw":405.71,"pkgtmp":107.0,"therm":"T","thr":374.0},{"n":165.0,"enc":3669946.0,"data":2446631.0,"mhz":2312.0,"pkgw":406.17,"pkgtmp":107.0,"therm":"-","thr":426.0},{"n":166.0,"enc":3681920.0,"data":2454613.0,"mhz":2305.0,"pkgw":405.88,"pkgtmp":107.0,"therm":"T","thr":469.0},{"n":167.0,"enc":3697407.0,"data":2464938.0,"mhz":2303.0,"pkgw":407.04,"pkgtmp":106.0,"therm":"T","thr":441.0},{"n":168.0,"enc":3709347.0,"data":2472898.0,"mhz":2295.0,"pkgw":406.28,"pkgtmp":107.0,"therm":"T","thr":439.0},{"n":169.0,"enc":3731909.0,"data":2487939.0,"mhz":2294.0,"pkgw":408.19,"pkgtmp":106.0,"therm":"T","thr":478.0},{"n":170.0,"enc":3745044.0,"data":2496696.0,"mhz":2287.0,"pkgw":408.25,"pkgtmp":107.0,"therm":"T","thr":456.0},{"n":171.0,"enc":3756089.0,"data":2504059.0,"mhz":2285.0,"pkgw":408.46,"pkgtmp":107.0,"therm":"T","thr":467.0},{"n":172.0,"enc":3772074.0,"data":2514716.0,"mhz":2281.0,"pkgw":409.22,"pkgtmp":106.0,"therm":"-","thr":449.0},{"n":173.0,"enc":3785813.0,"data":2523875.0,"mhz":2281.0,"pkgw":411.43,"pkgtmp":107.0,"therm":"T","thr":503.0},{"n":174.0,"enc":3813309.0,"data":2542206.0,"mhz":2279.0,"pkgw":412.79,"pkgtmp":107.0,"therm":"T","thr":451.0},{"n":175.0,"enc":3832634.0,"data":2555089.0,"mhz":2274.0,"pkgw":413.23,"pkgtmp":107.0,"therm":"T","thr":444.0},{"n":176.0,"enc":3847348.0,"data":2564899.0,"mhz":2267.0,"pkgw":412.5,"pkgtmp":107.0,"therm":"T","thr":382.0},{"n":177.0,"enc":3851379.0,"data":2567586.0,"mhz":2266.0,"pkgw":414.22,"pkgtmp":107.0,"therm":"T","thr":444.0},{"n":178.0,"enc":3859186.0,"data":2572791.0,"mhz":2255.0,"pkgw":412.99,"pkgtmp":107.0,"therm":"T","thr":426.0},{"n":179.0,"enc":3872444.0,"data":2581629.0,"mhz":2245.0,"pkgw":411.28,"pkgtmp":107.0,"therm":"T","thr":404.0},{"n":180.0,"enc":3885980.0,"data":2590653.0,"mhz":2246.0,"pkgw":412.87,"pkgtmp":107.0,"therm":"T","thr":437.0},{"n":181.0,"enc":3898232.0,"data":2598821.0,"mhz":2241.0,"pkgw":null,"pkgtmp":107.0,"therm":"T","thr":471.0},{"n":182.0,"enc":3914775.0,"data":2609850.0,"mhz":2238.0,"pkgw":414.37,"pkgtmp":107.0,"therm":"T","thr":466.0},{"n":183.0,"enc":3929861.0,"data":2619907.0,"mhz":2233.0,"pkgw":414.28,"pkgtmp":106.0,"therm":"T","thr":467.0},{"n":184.0,"enc":3937090.0,"data":2624727.0,"mhz":2223.0,"pkgw":413.24,"pkgtmp":107.0,"therm":"T","thr":421.0},{"n":185.0,"enc":3960835.0,"data":2640557.0,"mhz":2222.0,"pkgw":415.08,"pkgtmp":107.0,"therm":"-","thr":440.0},{"n":186.0,"enc":3965519.0,"data":2643679.0,"mhz":2218.0,"pkgw":414.7,"pkgtmp":107.0,"therm":"T","thr":469.0},{"n":187.0,"enc":3989068.0,"data":2659379.0,"mhz":2216.0,"pkgw":416.08,"pkgtmp":107.0,"therm":"T","thr":465.0},{"n":188.0,"enc":4004425.0,"data":2669617.0,"mhz":2217.0,"pkgw":417.53,"pkgtmp":107.0,"therm":"T","thr":464.0},{"n":189.0,"enc":4018528.0,"data":2679019.0,"mhz":2216.0,"pkgw":419.35,"pkgtmp":107.0,"therm":"T","thr":471.0},{"n":190.0,"enc":4045048.0,"data":2696699.0,"mhz":2217.0,"pkgw":421.48,"pkgtmp":107.0,"therm":"T","thr":464.0},{"n":191.0,"enc":4059739.0,"data":2706493.0,"mhz":2211.0,"pkgw":421.56,"pkgtmp":107.0,"therm":"T","thr":493.0},{"n":192.0,"enc":4067259.0,"data":2711506.0,"mhz":2206.0,"pkgw":421.0,"pkgtmp":107.0,"therm":"T","thr":406.0},{"n":193.0,"enc":4082279.0,"data":2721519.0,"mhz":2204.0,"pkgw":422.92,"pkgtmp":107.0,"therm":"T","thr":441.0},{"n":194.0,"enc":4098855.0,"data":2732570.0,"mhz":2191.0,"pkgw":422.66,"pkgtmp":107.0,"therm":"T","thr":477.0},{"n":195.0,"enc":4113653.0,"data":2742435.0,"mhz":2196.0,"pkgw":426.61,"pkgtmp":107.0,"therm":"-","thr":482.0},{"n":196.0,"enc":4113259.0,"data":2742173.0,"mhz":2190.0,"pkgw":426.75,"pkgtmp":107.0,"therm":"T","thr":581.0},{"n":197.0,"enc":4097938.0,"data":2731959.0,"mhz":2168.0,"pkgw":423.69,"pkgtmp":107.0,"therm":"T","thr":620.0},{"n":198.0,"enc":4128342.0,"data":2752228.0,"mhz":2170.0,"pkgw":426.21,"pkgtmp":107.0,"therm":"T","thr":589.0},{"n":199.0,"enc":4135192.0,"data":2756795.0,"mhz":2159.0,"pkgw":425.11,"pkgtmp":107.0,"therm":"T","thr":643.0},{"n":200.0,"enc":4152811.0,"data":2768541.0,"mhz":2161.0,"pkgw":426.39,"pkgtmp":107.0,"therm":"T","thr":604.0},{"n":201.0,"enc":4176273.0,"data":2784182.0,"mhz":2161.0,"pkgw":429.68,"pkgtmp":107.0,"therm":"T","thr":605.0},{"n":202.0,"enc":4189537.0,"data":2793025.0,"mhz":2161.0,"pkgw":431.23,"pkgtmp":107.0,"therm":"-","thr":648.0},{"n":203.0,"enc":4190020.0,"data":2793347.0,"mhz":2149.0,"pkgw":430.14,"pkgtmp":107.0,"therm":"T","thr":654.0},{"n":204.0,"enc":4200375.0,"data":2800250.0,"mhz":2151.0,"pkgw":431.66,"pkgtmp":106.0,"therm":"T","thr":611.0},{"n":205.0,"enc":4218494.0,"data":2812329.0,"mhz":2146.0,"pkgw":433.4,"pkgtmp":107.0,"therm":"T","thr":636.0},{"n":206.0,"enc":4237195.0,"data":2824797.0,"mhz":2145.0,"pkgw":434.58,"pkgtmp":107.0,"therm":"T","thr":617.0},{"n":207.0,"enc":4253642.0,"data":2835761.0,"mhz":2143.0,"pkgw":434.96,"pkgtmp":107.0,"therm":"T","thr":618.0},{"n":208.0,"enc":4254697.0,"data":2836465.0,"mhz":2131.0,"pkgw":434.25,"pkgtmp":107.0,"therm":"T","thr":577.0},{"n":209.0,"enc":4278625.0,"data":2852417.0,"mhz":2131.0,"pkgw":436.72,"pkgtmp":107.0,"therm":"T","thr":606.0},{"n":210.0,"enc":4291486.0,"data":2860991.0,"mhz":2131.0,"pkgw":437.52,"pkgtmp":107.0,"therm":"T","thr":593.0},{"n":211.0,"enc":4313979.0,"data":2875986.0,"mhz":2127.0,"pkgw":438.83,"pkgtmp":107.0,"therm":"T","thr":540.0},{"n":212.0,"enc":4319681.0,"data":2879787.0,"mhz":2133.0,"pkgw":441.2,"pkgtmp":107.0,"therm":"T","thr":574.0},{"n":213.0,"enc":4335612.0,"data":2890408.0,"mhz":2123.0,"pkgw":440.63,"pkgtmp":107.0,"therm":"T","thr":599.0},{"n":214.0,"enc":4342129.0,"data":2894753.0,"mhz":2103.0,"pkgw":435.73,"pkgtmp":107.0,"therm":"T","thr":582.0},{"n":215.0,"enc":4376010.0,"data":2917340.0,"mhz":2118.0,"pkgw":442.13,"pkgtmp":107.0,"therm":"T","thr":612.0},{"n":216.0,"enc":4365625.0,"data":2910417.0,"mhz":2103.0,"pkgw":437.57,"pkgtmp":107.0,"therm":"T","thr":599.0},{"n":217.0,"enc":4384959.0,"data":2923306.0,"mhz":2114.0,"pkgw":442.75,"pkgtmp":107.0,"therm":"T","thr":616.0},{"n":218.0,"enc":4416046.0,"data":2944031.0,"mhz":2111.0,"pkgw":444.31,"pkgtmp":107.0,"therm":"T","thr":615.0},{"n":219.0,"enc":4402719.0,"data":2935146.0,"mhz":2093.0,"pkgw":440.88,"pkgtmp":107.0,"therm":"T","thr":621.0},{"n":220.0,"enc":4433131.0,"data":2955421.0,"mhz":2107.0,"pkgw":445.44,"pkgtmp":107.0,"therm":"T","thr":593.0},{"n":221.0,"enc":4436094.0,"data":2957396.0,"mhz":2100.0,"pkgw":446.37,"pkgtmp":107.0,"therm":"T","thr":587.0},{"n":222.0,"enc":4470211.0,"data":2980141.0,"mhz":2098.0,"pkgw":447.05,"pkgtmp":107.0,"therm":"T","thr":642.0},{"n":223.0,"enc":4485508.0,"data":2990339.0,"mhz":2099.0,"pkgw":448.66,"pkgtmp":107.0,"therm":"T","thr":613.0},{"n":224.0,"enc":4498937.0,"data":2999291.0,"mhz":2094.0,"pkgw":449.03,"pkgtmp":107.0,"therm":"-","thr":594.0},{"n":225.0,"enc":4517148.0,"data":3011432.0,"mhz":2094.0,"pkgw":450.33,"pkgtmp":107.0,"therm":"T","thr":612.0},{"n":226.0,"enc":4530117.0,"data":3020078.0,"mhz":2093.0,"pkgw":450.87,"pkgtmp":107.0,"therm":"T","thr":618.0},{"n":227.0,"enc":4551746.0,"data":3034497.0,"mhz":2096.0,"pkgw":452.47,"pkgtmp":107.0,"therm":"T","thr":627.0},{"n":228.0,"enc":4534915.0,"data":3023277.0,"mhz":2088.0,"pkgw":453.9,"pkgtmp":107.0,"therm":"-","thr":642.0},{"n":229.0,"enc":4575982.0,"data":3050655.0,"mhz":2081.0,"pkgw":451.64,"pkgtmp":107.0,"therm":"T","thr":611.0},{"n":230.0,"enc":4578560.0,"data":3052373.0,"mhz":2073.0,"pkgw":449.97,"pkgtmp":107.0,"therm":"T","thr":623.0},{"n":231.0,"enc":4583912.0,"data":3055941.0,"mhz":2074.0,"pkgw":452.51,"pkgtmp":107.0,"therm":"T","thr":613.0},{"n":232.0,"enc":4595864.0,"data":3063909.0,"mhz":2070.0,"pkgw":451.92,"pkgtmp":107.0,"therm":"T","thr":618.0},{"n":233.0,"enc":4579553.0,"data":3053035.0,"mhz":2053.0,"pkgw":447.69,"pkgtmp":107.0,"therm":"T","thr":659.0},{"n":234.0,"enc":4608005.0,"data":3072003.0,"mhz":2054.0,"pkgw":449.46,"pkgtmp":107.0,"therm":"T","thr":638.0},{"n":235.0,"enc":4629055.0,"data":3086037.0,"mhz":2049.0,"pkgw":449.2,"pkgtmp":107.0,"therm":"T","thr":608.0},{"n":236.0,"enc":4646625.0,"data":3097750.0,"mhz":2053.0,"pkgw":451.92,"pkgtmp":107.0,"therm":"T","thr":621.0},{"n":237.0,"enc":4752926.0,"data":3168617.0,"mhz":2093.0,"pkgw":465.05,"pkgtmp":107.0,"therm":"T","thr":648.0},{"n":238.0,"enc":4894655.0,"data":3263103.0,"mhz":2141.0,"pkgw":481.01,"pkgtmp":107.0,"therm":"-","thr":633.0},{"n":239.0,"enc":4982276.0,"data":3321517.0,"mhz":2169.0,"pkgw":491.59,"pkgtmp":107.0,"therm":"-","thr":593.0},{"n":240.0,"enc":4975253.0,"data":3316835.0,"mhz":2162.0,"pkgw":489.45,"pkgtmp":107.0,"therm":"T","thr":625.0},{"n":241.0,"enc":4959194.0,"data":3306129.0,"mhz":2145.0,"pkgw":485.84,"pkgtmp":107.0,"therm":"T","thr":599.0},{"n":242.0,"enc":4942577.0,"data":3295051.0,"mhz":2135.0,"pkgw":483.68,"pkgtmp":107.0,"therm":"T","thr":615.0},{"n":243.0,"enc":4935732.0,"data":3290488.0,"mhz":2121.0,"pkgw":481.92,"pkgtmp":107.0,"therm":"T","thr":628.0},{"n":244.0,"enc":4919956.0,"data":3279971.0,"mhz":2105.0,"pkgw":478.53,"pkgtmp":107.0,"therm":"T","thr":594.0},{"n":245.0,"enc":4909463.0,"data":3272975.0,"mhz":2094.0,"pkgw":476.83,"pkgtmp":107.0,"therm":"T","thr":577.0},{"n":246.0,"enc":4882994.0,"data":3255329.0,"mhz":2078.0,"pkgw":472.75,"pkgtmp":107.0,"therm":"T","thr":589.0},{"n":247.0,"enc":4868795.0,"data":3245863.0,"mhz":2061.0,"pkgw":468.51,"pkgtmp":107.0,"therm":"T","thr":576.0},{"n":248.0,"enc":4878424.0,"data":3252283.0,"mhz":2047.0,"pkgw":464.93,"pkgtmp":107.0,"therm":"T","thr":580.0},{"n":249.0,"enc":4898029.0,"data":3265353.0,"mhz":2060.0,"pkgw":471.06,"pkgtmp":107.0,"therm":"T","thr":605.0},{"n":250.0,"enc":4914695.0,"data":3276463.0,"mhz":2056.0,"pkgw":472.07,"pkgtmp":107.0,"therm":"T","thr":611.0},{"n":251.0,"enc":4904204.0,"data":3269469.0,"mhz":2044.0,"pkgw":468.22,"pkgtmp":107.0,"therm":"-","thr":622.0},{"n":252.0,"enc":4905568.0,"data":3270379.0,"mhz":2026.0,"pkgw":464.19,"pkgtmp":107.0,"therm":"T","thr":603.0},{"n":253.0,"enc":4943896.0,"data":3295931.0,"mhz":2038.0,"pkgw":469.71,"pkgtmp":107.0,"therm":"T","thr":596.0},{"n":254.0,"enc":4925094.0,"data":3283396.0,"mhz":2022.0,"pkgw":465.67,"pkgtmp":107.0,"therm":"-","thr":609.0},{"n":255.0,"enc":4962968.0,"data":3308645.0,"mhz":2032.0,"pkgw":470.4,"pkgtmp":107.0,"therm":"T","thr":620.0},{"n":256.0,"enc":4951551.0,"data":3301034.0,"mhz":2018.0,"pkgw":469.21,"pkgtmp":107.0,"therm":"T","thr":618.0},{"n":257.0,"enc":4978258.0,"data":3318839.0,"mhz":2018.0,"pkgw":468.55,"pkgtmp":107.0,"therm":"T","thr":579.0},{"n":258.0,"enc":4980154.0,"data":3320103.0,"mhz":2013.0,"pkgw":468.0,"pkgtmp":107.0,"therm":"T","thr":646.0},{"n":259.0,"enc":4985442.0,"data":3323628.0,"mhz":2012.0,"pkgw":468.31,"pkgtmp":107.0,"therm":"T","thr":632.0},{"n":260.0,"enc":5031588.0,"data":3354392.0,"mhz":2019.0,"pkgw":472.92,"pkgtmp":107.0,"therm":"T","thr":646.0},{"n":261.0,"enc":5062879.0,"data":3375253.0,"mhz":2026.0,"pkgw":477.47,"pkgtmp":107.0,"therm":"T","thr":591.0},{"n":262.0,"enc":5094064.0,"data":3396043.0,"mhz":2021.0,"pkgw":476.73,"pkgtmp":107.0,"therm":"T","thr":618.0},{"n":263.0,"enc":5299237.0,"data":3532825.0,"mhz":2096.0,"pkgw":502.15,"pkgtmp":107.0,"therm":"T","thr":589.0},{"n":264.0,"enc":5462690.0,"data":3641793.0,"mhz":2154.0,"pkgw":521.95,"pkgtmp":107.0,"therm":"T","thr":655.0},{"n":265.0,"enc":5560675.0,"data":3707117.0,"mhz":2186.0,"pkgw":534.74,"pkgtmp":107.0,"therm":"-","thr":646.0},{"n":266.0,"enc":5573562.0,"data":3715708.0,"mhz":2180.0,"pkgw":534.21,"pkgtmp":107.0,"therm":"T","thr":637.0},{"n":267.0,"enc":5554717.0,"data":3703145.0,"mhz":2163.0,"pkgw":529.57,"pkgtmp":107.0,"therm":"T","thr":606.0},{"n":268.0,"enc":5510546.0,"data":3673697.0,"mhz":2144.0,"pkgw":523.98,"pkgtmp":107.0,"therm":"T","thr":632.0},{"n":269.0,"enc":5459209.0,"data":3639473.0,"mhz":2119.0,"pkgw":516.78,"pkgtmp":107.0,"therm":"T","thr":618.0},{"n":270.0,"enc":5418695.0,"data":3612463.0,"mhz":2096.0,"pkgw":511.08,"pkgtmp":107.0,"therm":"-","thr":608.0},{"n":271.0,"enc":5386250.0,"data":3590833.0,"mhz":2080.0,"pkgw":506.81,"pkgtmp":107.0,"therm":"T","thr":612.0},{"n":272.0,"enc":5360027.0,"data":3573351.0,"mhz":2065.0,"pkgw":503.66,"pkgtmp":107.0,"therm":"T","thr":609.0},{"n":273.0,"enc":5309374.0,"data":3539583.0,"mhz":2033.0,"pkgw":494.07,"pkgtmp":107.0,"therm":"T","thr":601.0},{"n":274.0,"enc":5301375.0,"data":3534250.0,"mhz":2013.0,"pkgw":487.59,"pkgtmp":107.0,"therm":"T","thr":542.0},{"n":275.0,"enc":5293126.0,"data":3528751.0,"mhz":2008.0,"pkgw":487.97,"pkgtmp":107.0,"therm":"T","thr":580.0},{"n":276.0,"enc":5302533.0,"data":3535022.0,"mhz":2001.0,"pkgw":487.09,"pkgtmp":107.0,"therm":"T","thr":576.0},{"n":277.0,"enc":5285458.0,"data":3523639.0,"mhz":1996.0,"pkgw":485.74,"pkgtmp":107.0,"therm":"T","thr":608.0},{"n":278.0,"enc":5299013.0,"data":3532675.0,"mhz":1983.0,"pkgw":484.1,"pkgtmp":107.0,"therm":"T","thr":546.0},{"n":279.0,"enc":5329819.0,"data":3553213.0,"mhz":1994.0,"pkgw":487.75,"pkgtmp":107.0,"therm":"T","thr":568.0},{"n":280.0,"enc":5315596.0,"data":3543731.0,"mhz":1980.0,"pkgw":484.71,"pkgtmp":107.0,"therm":"-","thr":580.0},{"n":281.0,"enc":5321676.0,"data":3547784.0,"mhz":1983.0,"pkgw":486.72,"pkgtmp":107.0,"therm":"T","thr":601.0},{"n":282.0,"enc":5330612.0,"data":3553741.0,"mhz":1965.0,"pkgw":480.76,"pkgtmp":107.0,"therm":"-","thr":616.0},{"n":283.0,"enc":5362872.0,"data":3575248.0,"mhz":1974.0,"pkgw":486.66,"pkgtmp":107.0,"therm":"T","thr":577.0},{"n":284.0,"enc":5403172.0,"data":3602115.0,"mhz":1982.0,"pkgw":489.66,"pkgtmp":107.0,"therm":"T","thr":579.0},{"n":285.0,"enc":5445550.0,"data":3630367.0,"mhz":1991.0,"pkgw":494.46,"pkgtmp":107.0,"therm":"T","thr":572.0},{"n":286.0,"enc":5434746.0,"data":3623164.0,"mhz":1981.0,"pkgw":491.8,"pkgtmp":107.0,"therm":"T","thr":600.0},{"n":287.0,"enc":5450979.0,"data":3633986.0,"mhz":1972.0,"pkgw":491.39,"pkgtmp":107.0,"therm":"T","thr":583.0},{"n":288.0,"enc":5473635.0,"data":3649090.0,"mhz":1978.0,"pkgw":492.22,"pkgtmp":107.0,"therm":"T","thr":639.0}],"cwf_freq_ec_cold":[{"n":1.0,"enc":31380.0,"data":20920.0,"mhz":3193.0,"pkgw":118.15,"pkgtmp":59.0,"therm":"-","thr":0.0},{"n":24.0,"enc":726338.0,"data":484225.0,"mhz":3137.0,"pkgw":202.89,"pkgtmp":87.0,"therm":"-","thr":0.0},{"n":44.0,"enc":1262360.0,"data":841573.0,"mhz":2972.0,"pkgw":254.8,"pkgtmp":93.0,"therm":"-","thr":0.0},{"n":96.0,"enc":2657740.0,"data":1771827.0,"mhz":2872.0,"pkgw":389.08,"pkgtmp":100.0,"therm":"-","thr":0.0},{"n":192.0,"enc":5083857.0,"data":3389238.0,"mhz":2749.0,"pkgw":569.73,"pkgtmp":101.0,"therm":"L","thr":0.0},{"n":288.0,"enc":6578865.0,"data":4385910.0,"mhz":2383.0,"pkgw":568.95,"pkgtmp":88.0,"therm":"L","thr":0.0}],"cwf_freq_ec_spread":[{"n":24.0,"enc":703262.0,"data":468841.0,"mhz":2993.0,"pkgw":199.0,"pkgtmp":74.0,"therm":"-","thr":0.0},{"n":48.0,"enc":1399171.0,"data":932781.0,"mhz":2993.0,"pkgw":286.95,"pkgtmp":80.0,"therm":"-","thr":0.0},{"n":72.0,"enc":2036395.0,"data":1357597.0,"mhz":2893.0,"pkgw":350.81,"pkgtmp":85.0,"therm":"-","thr":0.0},{"n":96.0,"enc":2710038.0,"data":1806692.0,"mhz":2893.0,"pkgw":418.61,"pkgtmp":91.0,"therm":"-","thr":0.0},{"n":144.0,"enc":4057422.0,"data":2704948.0,"mhz":2893.0,"pkgw":559.57,"pkgtmp":105.0,"therm":"-","thr":0.0},{"n":192.0,"enc":5099385.0,"data":3399590.0,"mhz":2748.0,"pkgw":559.49,"pkgtmp":105.0,"therm":"L","thr":53.0},{"n":240.0,"enc":5850979.0,"data":3900653.0,"mhz":2523.0,"pkgw":560.47,"pkgtmp":104.0,"therm":"L","thr":2.0},{"n":288.0,"enc":6489267.0,"data":4326178.0,"mhz":2340.0,"pkgw":559.78,"pkgtmp":106.0,"therm":"L","thr":36.0}]},"hold":{"cwf_hold":[{"t(s)":5.0,"Busy%":99.76,"Bzy_MHz":2382.0,"PkgTmp":98.0,"PkgWatt":570.65,"RAMWatt":21.8},{"t(s)":10.0,"Busy%":99.76,"Bzy_MHz":2336.0,"PkgTmp":99.0,"PkgWatt":550.04,"RAMWatt":21.83},{"t(s)":15.0,"Busy%":99.76,"Bzy_MHz":2334.0,"PkgTmp":100.0,"PkgWatt":549.92,"RAMWatt":21.81},{"t(s)":20.0,"Busy%":99.76,"Bzy_MHz":2333.0,"PkgTmp":102.0,"PkgWatt":549.98,"RAMWatt":21.85},{"t(s)":25.0,"Busy%":99.76,"Bzy_MHz":2332.0,"PkgTmp":100.0,"PkgWatt":549.93,"RAMWatt":21.88},{"t(s)":30.0,"Busy%":99.76,"Bzy_MHz":2332.0,"PkgTmp":101.0,"PkgWatt":550.02,"RAMWatt":21.89},{"t(s)":35.0,"Busy%":99.76,"Bzy_MHz":2332.0,"PkgTmp":100.0,"PkgWatt":549.84,"RAMWatt":21.91},{"t(s)":40.0,"Busy%":99.76,"Bzy_MHz":2332.0,"PkgTmp":100.0,"PkgWatt":550.06,"RAMWatt":21.91},{"t(s)":45.0,"Busy%":99.76,"Bzy_MHz":2332.0,"PkgTmp":100.0,"PkgWatt":549.84,"RAMWatt":21.92},{"t(s)":50.0,"Busy%":99.76,"Bzy_MHz":2331.0,"PkgTmp":99.0,"PkgWatt":549.95,"RAMWatt":21.96},{"t(s)":55.0,"Busy%":99.76,"Bzy_MHz":2331.0,"PkgTmp":99.0,"PkgWatt":550.01,"RAMWatt":21.92},{"t(s)":60.0,"Busy%":99.76,"Bzy_MHz":2331.0,"PkgTmp":99.0,"PkgWatt":549.91,"RAMWatt":21.91}]},"cwf":{"head":{"host":"localhost   date: 2026-10-28T11:33:18-04:00","cpu":"Intel(R) Xeon? 6992E+C","topo":"Thread(s) per core: 1;Core(s) per socket: 288;Socket(s): 1;NUMA node(s): 3","flags":"avx2 gfni vpclmulqdq","freq":"max 3200.0000 MHz, governor performance","memory":"12 Configured Memory Speed: 6400 MT/s;12 Size: 32 GiB;12 Type: DDR5","sw":"kernel 6.12.0-243.el10.x86_64; gcc (GCC) 14.4.1 20260629 (Red Hat 14.4.1-1); NASM version 2.16 compiled on Oct 27 2026; isa-l 3d3c721","bench":"single-core cpu 2; 288 physical cores (288 per socket, 96 in first NUMA node), SMT siblings 0; scale cores: 1 2 4 8 16 32 64 96 128 256 288; procs per core: 1; isas: avx2 avx2_gfni","correctness":"erasure_code_test: 127x8192 done EC tests: Pass","note":"section 8 from run at 2026-10-29T04:29:17-04:00"},"s1":{"4+2":[55193.44,55333.46,36795.63],"6+3":[38873.2,38575.34,25915.47],"8+3":[36553.4,36298.31,26584.29],"8+4":[31273.81,30709.82,20849.21],"10+4":[29936.39,29079.67,21383.14],"12+4":[28352.67,28165.13,21264.5],"16+4":[27666.55,26974.11,22133.24],"20+4":[26828.55,26448.94,22357.12],"24+8":[15080.12,14976.35,11310.09]},"s2":{"4K":[31160.37,30658.56,20773.58],"16K":[31252.49,30662.69,20834.99],"64K":[30470.21,30370.59,20313.47],"256K":[29056.05,29455.33,19370.7],"1M":[24889.55,24842.93,16593.03]},"s3":{"6+3":[24614.77,24559.74,16409.85],"8+4":[21703.89,21630.35,14469.26],"12+4":[20169.08,20261.84,15126.81],"16+4":[19385.4,19559.69,15508.32]},"s4":{"1":[30445.02,61276.63,20296.68],"2":[31309.8,49425.73,20873.2],"3":[31307.83,36489.62,20871.89],"4":[31230.85,30581.45,20820.57]},"s5":{"encode":329.31,"decode":343.07},"s6":[{"wl":"cache","tpc":1.0,"cores":1.0,"procs":1.0,"enc":31166.0,"data":20778.0,"mhz":3193.0,"rd":0.3,"wr":0.3,"pkgw":114.09},{"wl":"cache","tpc":1.0,"cores":2.0,"procs":2.0,"enc":62511.0,"data":41674.0,"mhz":3193.0,"rd":0.3,"wr":0.3,"pkgw":119.79},{"wl":"cache","tpc":1.0,"cores":4.0,"procs":4.0,"enc":122690.0,"data":81793.0,"mhz":3170.0,"rd":0.3,"wr":0.3,"pkgw":127.1},{"wl":"cache","tpc":1.0,"cores":8.0,"procs":8.0,"enc":244366.0,"data":162911.0,"mhz":3170.0,"rd":0.3,"wr":0.3,"pkgw":145.76},{"wl":"cache","tpc":1.0,"cores":16.0,"procs":16.0,"enc":490821.0,"data":327214.0,"mhz":3170.0,"rd":0.3,"wr":0.3,"pkgw":177.28},{"wl":"cache","tpc":1.0,"cores":32.0,"procs":32.0,"enc":917118.0,"data":611412.0,"mhz":2972.0,"rd":0.3,"wr":0.3,"pkgw":216.79},{"wl":"cache","tpc":1.0,"cores":64.0,"procs":64.0,"enc":1830094.0,"data":1220063.0,"mhz":2966.0,"rd":0.3,"wr":0.3,"pkgw":323.79},{"wl":"cache","tpc":1.0,"cores":96.0,"procs":96.0,"enc":2621522.0,"data":1747681.0,"mhz":2834.0,"rd":0.3,"wr":0.3,"pkgw":389.15},{"wl":"cache","tpc":1.0,"cores":128.0,"procs":128.0,"enc":3410832.0,"data":2273888.0,"mhz":2763.0,"rd":0.3,"wr":0.3,"pkgw":455.86},{"wl":"cache","tpc":1.0,"cores":256.0,"procs":256.0,"enc":6007383.0,"data":4004922.0,"mhz":2447.0,"rd":0.3,"wr":0.3,"pkgw":550.91},{"wl":"cache","tpc":1.0,"cores":288.0,"procs":288.0,"enc":6422569.0,"data":4281713.0,"mhz":2323.0,"rd":0.3,"wr":0.3,"pkgw":551.83},{"wl":"dram","tpc":1.0,"cores":1.0,"procs":1.0,"enc":24108.0,"data":16072.0,"mhz":3193.0,"rd":2.9,"wr":1.1,"pkgw":126.66},{"wl":"dram","tpc":1.0,"cores":2.0,"procs":2.0,"enc":35943.0,"data":23962.0,"mhz":3193.0,"rd":19.0,"wr":7.7,"pkgw":129.16},{"wl":"dram","tpc":1.0,"cores":4.0,"procs":4.0,"enc":26290.0,"data":17527.0,"mhz":3193.0,"rd":21.4,"wr":8.5,"pkgw":129.23},{"wl":"dram","tpc":1.0,"cores":8.0,"procs":8.0,"enc":47715.0,"data":31810.0,"mhz":3192.0,"rd":44.3,"wr":16.0,"pkgw":137.59},{"wl":"dram","tpc":1.0,"cores":16.0,"procs":16.0,"enc":73488.0,"data":48992.0,"mhz":3192.0,"rd":72.3,"wr":24.7,"pkgw":151.32},{"wl":"dram","tpc":1.0,"cores":32.0,"procs":32.0,"enc":102278.0,"data":68185.0,"mhz":2993.0,"rd":103.5,"wr":34.3,"pkgw":160.68},{"wl":"dram","tpc":1.0,"cores":64.0,"procs":64.0,"enc":119217.0,"data":79478.0,"mhz":2993.0,"rd":121.8,"wr":40.0,"pkgw":183.26},{"wl":"dram","tpc":1.0,"cores":96.0,"procs":96.0,"enc":122552.0,"data":81701.0,"mhz":2893.0,"rd":125.1,"wr":41.1,"pkgw":196.86},{"wl":"dram","tpc":1.0,"cores":128.0,"procs":128.0,"enc":225942.0,"data":150628.0,"mhz":2918.0,"rd":229.4,"wr":75.6,"pkgw":245.63},{"wl":"dram","tpc":1.0,"cores":256.0,"procs":256.0,"enc":363957.0,"data":242638.0,"mhz":2917.0,"rd":371.3,"wr":121.6,"pkgw":350.68},{"wl":"dram","tpc":1.0,"cores":288.0,"procs":288.0,"enc":368495.0,"data":245663.0,"mhz":2893.0,"rd":376.0,"wr":123.2,"pkgw":369.2}],"s7":{"avx2":{"8+4":[12782.18,12706.82,8521.45,3193.0,2.89],"10+4":[11965.77,11893.28,8546.98,3193.0,2.87],"10+4 64M":[10098.46,10134.42,7213.19,3192.0,2.06]},"avx2_gfni":{"8+4":[30320.69,30332.46,20213.79,3193.0,2.95],"10+4":[29610.05,28903.42,21150.04,3193.0,3.0],"10+4 64M":[20991.38,20967.95,14993.84,3192.0,1.91]}},"s8":[{"cfg":"1t","cpus":"2","wl":"cache","enc":29877.0,"dec":29022.0,"data":21340.0,"mhz":3193.0},{"cfg":"2c_l2","cpus":"2,3","wl":"cache","enc":59716.0,"dec":57775.0,"data":42655.0,"mhz":3193.0},{"cfg":"2c","cpus":"2,4","wl":"cache","enc":59652.0,"dec":57999.0,"data":42609.0,"mhz":3192.0},{"cfg":"1t","cpus":"2","wl":"dram","enc":21017.0,"dec":21013.0,"data":15012.0,"mhz":3193.0},{"cfg":"2c_l2","cpus":"2,3","wl":"dram","enc":32855.0,"dec":32799.0,"data":23468.0,"mhz":3193.0},{"cfg":"2c","cpus":"2,4","wl":"dram","enc":40642.0,"dec":40737.0,"data":29030.0,"mhz":3193.0}]},"emr06":{"head":{"host":"emr06   date: 2026-10-28T23:35:24+08:00","cpu":"INTEL(R) XEON(R) PLATINUM 8576C","topo":"Thread(s) per core: 2;Core(s) per socket: 56;Socket(s): 2;NUMA node(s): 4","flags":"avx2 avx512bw avx512f avx512vl gfni vpclmulqdq","freq":"max 4000.0000 MHz, governor performance","memory":"16 Configured Memory Speed: 5600 MT/s;16 Size: 32 GB;16 Type: DDR5","sw":"kernel 6.12.0-dirty; gcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-15); NASM version 2.15.03 compiled on Aug  9 2021; isa-l 96be773","bench":"single-core cpu 2; 112 physical cores (56 per socket, 28 in first NUMA node), SMT siblings 112; scale cores: 1 2 4 8 16 28 32 56 64 112; procs per core: 1 2; isas: avx2 avx2_gfni avx512 avx512_gfni","correctness":"erasure_code_test: 127x8192 done EC tests: Pass","note":"section 8 from run at 2026-10-29T16:32:58+08:00"},"s1":{"4+2":[117260.69,110333.49,78173.79],"6+3":[91983.08,91250.65,61322.05],"8+3":[86208.99,84980.56,62697.45],"8+4":[75000.27,74929.08,50000.18],"10+4":[73542.23,73802.88,52530.16],"12+4":[70218.27,68207.72,52663.7],"16+4":[66257.27,66013.75,53005.82],"20+4":[63412.1,63491.91,52843.42],"24+8":[33194.41,33276.2,24895.81]},"s2":{"4K":[79400.88,74348.12,52933.92],"16K":[73950.86,74601.02,49300.57],"64K":[72178.57,73913.25,48119.05],"256K":[40206.79,38774.69,26804.53],"1M":[36810.51,36850.89,24540.34]},"s3":{"6+3":[18447.63,18571.87,12298.42],"8+4":[17651.67,17641.69,11767.78],"12+4":[16962.38,17018.29,12721.78],"16+4":[16680.44,16762.93,13344.35]},"s4":{"1":[75230.31,114389.24,50153.54],"2":[74840.98,100486.93,49893.99],"3":[75464.8,84886.02,50309.87],"4":[75005.07,74119.39,50003.38]},"s5":{"encode":437.61,"decode":440.13},"s6":[{"wl":"cache","tpc":1.0,"cores":1.0,"procs":1.0,"enc":74247.0,"data":49498.0,"mhz":3787.0,"rd":1.0,"wr":0.7,"pkgw":309.95},{"wl":"cache","tpc":1.0,"cores":2.0,"procs":2.0,"enc":148886.0,"data":99258.0,"mhz":3790.0,"rd":0.2,"wr":0.2,"pkgw":315.77},{"wl":"cache","tpc":1.0,"cores":4.0,"procs":4.0,"enc":297743.0,"data":198495.0,"mhz":3791.0,"rd":0.2,"wr":0.2,"pkgw":338.56},{"wl":"cache","tpc":1.0,"cores":8.0,"procs":8.0,"enc":595399.0,"data":396933.0,"mhz":3791.0,"rd":0.2,"wr":0.2,"pkgw":385.83},{"wl":"cache","tpc":1.0,"cores":16.0,"procs":16.0,"enc":1197247.0,"data":798164.0,"mhz":3791.0,"rd":0.2,"wr":0.2,"pkgw":483.53},{"wl":"cache","tpc":1.0,"cores":28.0,"procs":28.0,"enc":1839609.0,"data":1226406.0,"mhz":3313.0,"rd":0.2,"wr":0.2,"pkgw":535.27},{"wl":"cache","tpc":1.0,"cores":32.0,"procs":32.0,"enc":1994283.0,"data":1329522.0,"mhz":3163.0,"rd":0.4,"wr":0.2,"pkgw":536.68},{"wl":"cache","tpc":1.0,"cores":56.0,"procs":56.0,"enc":2753311.0,"data":1835541.0,"mhz":2480.0,"rd":0.3,"wr":0.2,"pkgw":538.74},{"wl":"cache","tpc":1.0,"cores":64.0,"procs":64.0,"enc":3344536.0,"data":2229691.0,"mhz":2645.0,"rd":0.2,"wr":0.2,"pkgw":637.47},{"wl":"cache","tpc":1.0,"cores":112.0,"procs":112.0,"enc":5819397.0,"data":3879598.0,"mhz":2650.0,"rd":0.5,"wr":0.4,"pkgw":766.66},{"wl":"cache","tpc":2.0,"cores":1.0,"procs":2.0,"enc":72940.0,"data":48627.0,"mhz":3792.0,"rd":0.2,"wr":0.2,"pkgw":308.81},{"wl":"cache","tpc":2.0,"cores":2.0,"procs":4.0,"enc":145765.0,"data":97177.0,"mhz":3792.0,"rd":0.2,"wr":0.2,"pkgw":319.44},{"wl":"cache","tpc":2.0,"cores":4.0,"procs":8.0,"enc":292348.0,"data":194898.0,"mhz":3792.0,"rd":0.2,"wr":0.2,"pkgw":343.13},{"wl":"cache","tpc":2.0,"cores":8.0,"procs":16.0,"enc":583520.0,"data":389014.0,"mhz":3792.0,"rd":0.2,"wr":0.2,"pkgw":392.65},{"wl":"cache","tpc":2.0,"cores":16.0,"procs":32.0,"enc":1169244.0,"data":779496.0,"mhz":3791.0,"rd":0.2,"wr":0.2,"pkgw":494.5},{"wl":"cache","tpc":2.0,"cores":28.0,"procs":56.0,"enc":1761353.0,"data":1174235.0,"mhz":3253.0,"rd":0.2,"wr":0.2,"pkgw":535.7},{"wl":"cache","tpc":2.0,"cores":32.0,"procs":64.0,"enc":1918586.0,"data":1279057.0,"mhz":3113.0,"rd":0.3,"wr":0.2,"pkgw":536.52},{"wl":"cache","tpc":2.0,"cores":56.0,"procs":112.0,"enc":2612039.0,"data":1741360.0,"mhz":2423.0,"rd":0.3,"wr":0.2,"pkgw":536.42},{"wl":"cache","tpc":2.0,"cores":64.0,"procs":128.0,"enc":3197768.0,"data":2131845.0,"mhz":2594.0,"rd":0.3,"wr":0.2,"pkgw":641.96},{"wl":"cache","tpc":2.0,"cores":112.0,"procs":224.0,"enc":5588032.0,"data":3725354.0,"mhz":2596.0,"rd":0.6,"wr":0.4,"pkgw":768.53},{"wl":"dram","tpc":1.0,"cores":1.0,"procs":1.0,"enc":24498.0,"data":16332.0,"mhz":3991.0,"rd":7.5,"wr":1.9,"pkgw":309.95},{"wl":"dram","tpc":1.0,"cores":2.0,"procs":2.0,"enc":37684.0,"data":25122.0,"mhz":3991.0,"rd":25.4,"wr":8.6,"pkgw":318.71},{"wl":"dram","tpc":1.0,"cores":4.0,"procs":4.0,"enc":61882.0,"data":41255.0,"mhz":3991.0,"rd":52.1,"wr":17.5,"pkgw":335.15},{"wl":"dram","tpc":1.0,"cores":8.0,"procs":8.0,"enc":90552.0,"data":60368.0,"mhz":3991.0,"rd":83.6,"wr":27.9,"pkgw":360.62},{"wl":"dram","tpc":1.0,"cores":16.0,"procs":16.0,"enc":110912.0,"data":73942.0,"mhz":3992.0,"rd":98.7,"wr":35.9,"pkgw":398.64},{"wl":"dram","tpc":1.0,"cores":28.0,"procs":28.0,"enc":135088.0,"data":90059.0,"mhz":3629.0,"rd":88.8,"wr":45.2,"pkgw":435.98},{"wl":"dram","tpc":1.0,"cores":32.0,"procs":32.0,"enc":196427.0,"data":130952.0,"mhz":3393.0,"rd":140.4,"wr":62.4,"pkgw":459.24},{"wl":"dram","tpc":1.0,"cores":56.0,"procs":56.0,"enc":270040.0,"data":180027.0,"mhz":2994.0,"rd":176.9,"wr":90.0,"pkgw":513.82},{"wl":"dram","tpc":1.0,"cores":64.0,"procs":64.0,"enc":360618.0,"data":240412.0,"mhz":3118.0,"rd":260.5,"wr":117.9,"pkgw":589.25},{"wl":"dram","tpc":1.0,"cores":112.0,"procs":112.0,"enc":538193.0,"data":358796.0,"mhz":2993.0,"rd":354.2,"wr":179.7,"pkgw":736.02},{"wl":"dram","tpc":2.0,"cores":1.0,"procs":2.0,"enc":21238.0,"data":14159.0,"mhz":3992.0,"rd":14.1,"wr":4.4,"pkgw":299.59},{"wl":"dram","tpc":2.0,"cores":2.0,"procs":4.0,"enc":36887.0,"data":24591.0,"mhz":3991.0,"rd":31.0,"wr":10.5,"pkgw":310.31},{"wl":"dram","tpc":2.0,"cores":4.0,"procs":8.0,"enc":62454.0,"data":41636.0,"mhz":3992.0,"rd":57.6,"wr":19.4,"pkgw":327.42},{"wl":"dram","tpc":2.0,"cores":8.0,"procs":16.0,"enc":91678.0,"data":61119.0,"mhz":3991.0,"rd":88.9,"wr":29.5,"pkgw":354.6},{"wl":"dram","tpc":2.0,"cores":16.0,"procs":32.0,"enc":124229.0,"data":82820.0,"mhz":3992.0,"rd":92.0,"wr":40.9,"pkgw":411.14},{"wl":"dram","tpc":2.0,"cores":28.0,"procs":56.0,"enc":136870.0,"data":91247.0,"mhz":3643.0,"rd":88.8,"wr":44.4,"pkgw":440.37},{"wl":"dram","tpc":2.0,"cores":32.0,"procs":64.0,"enc":194729.0,"data":129819.0,"mhz":3393.0,"rd":145.9,"wr":63.5,"pkgw":462.39},{"wl":"dram","tpc":2.0,"cores":56.0,"procs":112.0,"enc":264929.0,"data":176620.0,"mhz":2994.0,"rd":177.2,"wr":88.5,"pkgw":519.09},{"wl":"dram","tpc":2.0,"cores":64.0,"procs":128.0,"enc":362569.0,"data":241713.0,"mhz":3118.0,"rd":266.0,"wr":117.8,"pkgw":595.18},{"wl":"dram","tpc":2.0,"cores":112.0,"procs":224.0,"enc":528908.0,"data":352605.0,"mhz":2994.0,"rd":355.0,"wr":176.7,"pkgw":745.23}],"s7":{"avx2":{"8+4":[24292.88,23971.59,16195.25,3992.0,4.38],"10+4":[23227.74,23095.34,16591.24,3992.0,4.45],"10+4 64M":[16260.89,16249.26,11614.92,3991.0,2.03]},"avx2_gfni":{"8+4":[48475.95,46936.32,32317.3,3992.0,3.72],"10+4":[45565.84,44959.14,32547.03,3992.0,3.7],"10+4 64M":[16719.49,16740.64,11942.49,3992.0,1.26]},"avx512":{"8+4":[23767.08,23765.05,15844.72,3992.0,2.4],"10+4":[22210.54,22208.19,15864.67,3992.0,2.38],"10+4 64M":[15794.24,15798.13,11281.6,3992.0,1.41]},"avx512_gfni":{"8+4":[75723.96,74244.01,50482.64,3789.0,4.09],"10+4":[74356.93,70415.02,53112.09,3789.0,4.16],"10+4 64M":[17267.22,17289.78,12333.73,3992.0,1.07]}},"s8":[{"cfg":"1t","cpus":"2","wl":"cache","enc":73504.0,"dec":71224.0,"data":52503.0,"mhz":3789.0},{"cfg":"smt","cpus":"2,114","wl":"cache","enc":69852.0,"dec":70731.0,"data":49895.0,"mhz":3792.0},{"cfg":"2c","cpus":"2,3","wl":"cache","enc":147161.0,"dec":145283.0,"data":105115.0,"mhz":3789.0},{"cfg":"1t","cpus":"2","wl":"dram","enc":17326.0,"dec":17325.0,"data":12376.0,"mhz":3992.0},{"cfg":"smt","cpus":"2,114","wl":"dram","enc":18202.0,"dec":18171.0,"data":13002.0,"mhz":3992.0},{"cfg":"2c","cpus":"2,3","wl":"dram","enc":32400.0,"dec":32409.0,"data":23143.0,"mhz":3992.0}]},"gnrsp":{"head":{"host":"gnrsp   date: 2026-10-28T23:33:00+08:00","cpu":"Intel(R) Xeon(R) 6767P","topo":"Thread(s) per core: 2;Core(s) per socket: 64;Socket(s): 2;NUMA node(s): 4","flags":"avx2 avx512bw avx512f avx512vl gfni vpclmulqdq","freq":"max 3900.0000 MHz, governor performance","memory":"16 Configured Memory Speed: 6400 MT/s;16 Size: 32 GB;16 Type: DDR5","sw":"kernel 6.8.0-71-generic; gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0; NASM version 2.16.01; isa-l 76228ea","bench":"single-core cpu 2; 128 physical cores (64 per socket, 32 in first NUMA node), SMT siblings 128; scale cores: 1 2 4 8 16 32 64 128; procs per core: 1 2; isas: avx2 avx2_gfni avx512 avx512_gfni","correctness":"erasure_code_test: 127x8192 done EC tests: Pass","note":"section 8 from run at 2026-10-29T16:29:07+08:00"},"s1":{"4+2":[87568.13,87513.24,58378.75],"6+3":[75316.16,75046.41,50210.77],"8+3":[66537.07,66583.44,48390.6],"8+4":[56216.61,56270.52,37477.74],"10+4":[54190.44,54178.07,38707.46],"12+4":[51656.16,51287.2,38742.12],"16+4":[48323.52,48326.52,38658.82],"20+4":[46618.36,46624.38,38848.63],"24+8":[25415.3,25532.2,19061.47]},"s2":{"4K":[58243.42,56197.48,38828.95],"16K":[55895.64,56005.04,37263.76],"64K":[55167.03,55572.89,36778.02],"256K":[31767.75,31963.38,21178.5],"1M":[29697.27,29697.16,19798.18]},"s3":{"6+3":[19423.14,19818.4,12948.76],"8+4":[18931.64,18866.39,12621.09],"12+4":[17490.18,17559.83,13117.64],"16+4":[17283.14,17321.49,13826.51]},"s4":{"1":[55809.02,90610.81,37206.01],"2":[55340.7,73589.67,36893.8],"3":[55838.55,65811.64,37225.7],"4":[56320.34,56160.55,37546.89]},"s5":{"encode":373.58,"decode":381.58},"s6":[{"wl":"cache","tpc":1.0,"cores":1.0,"procs":1.0,"enc":55938.0,"data":37292.0,"mhz":3093.0,"rd":0.4,"wr":0.4,"pkgw":297.83},{"wl":"cache","tpc":1.0,"cores":2.0,"procs":2.0,"enc":110591.0,"data":73727.0,"mhz":3092.0,"rd":0.4,"wr":0.4,"pkgw":301.47},{"wl":"cache","tpc":1.0,"cores":4.0,"procs":4.0,"enc":220760.0,"data":147174.0,"mhz":3093.0,"rd":0.4,"wr":0.4,"pkgw":310.1},{"wl":"cache","tpc":1.0,"cores":8.0,"procs":8.0,"enc":443762.0,"data":295842.0,"mhz":3093.0,"rd":0.4,"wr":0.4,"pkgw":327.63},{"wl":"cache","tpc":1.0,"cores":16.0,"procs":16.0,"enc":882062.0,"data":588042.0,"mhz":3092.0,"rd":0.4,"wr":0.4,"pkgw":358.01},{"wl":"cache","tpc":1.0,"cores":32.0,"procs":32.0,"enc":1764415.0,"data":1176276.0,"mhz":3091.0,"rd":0.4,"wr":0.4,"pkgw":424.03},{"wl":"cache","tpc":1.0,"cores":64.0,"procs":64.0,"enc":3507519.0,"data":2338346.0,"mhz":3082.0,"rd":0.4,"wr":0.4,"pkgw":498.52},{"wl":"cache","tpc":1.0,"cores":128.0,"procs":128.0,"enc":7021056.0,"data":4680704.0,"mhz":3076.0,"rd":0.5,"wr":0.4,"pkgw":699.36},{"wl":"cache","tpc":2.0,"cores":1.0,"procs":2.0,"enc":52468.0,"data":34979.0,"mhz":3292.0,"rd":0.4,"wr":0.4,"pkgw":305.41},{"wl":"cache","tpc":2.0,"cores":2.0,"procs":4.0,"enc":104832.0,"data":69888.0,"mhz":3292.0,"rd":0.4,"wr":0.4,"pkgw":306.54},{"wl":"cache","tpc":2.0,"cores":4.0,"procs":8.0,"enc":208764.0,"data":139176.0,"mhz":3291.0,"rd":0.4,"wr":0.4,"pkgw":315.51},{"wl":"cache","tpc":2.0,"cores":8.0,"procs":16.0,"enc":419628.0,"data":279752.0,"mhz":3291.0,"rd":0.4,"wr":0.4,"pkgw":331.81},{"wl":"cache","tpc":2.0,"cores":16.0,"procs":32.0,"enc":837633.0,"data":558422.0,"mhz":3291.0,"rd":0.4,"wr":0.4,"pkgw":366.34},{"wl":"cache","tpc":2.0,"cores":32.0,"procs":64.0,"enc":1672622.0,"data":1115081.0,"mhz":3291.0,"rd":0.7,"wr":0.5,"pkgw":440.18},{"wl":"cache","tpc":2.0,"cores":64.0,"procs":128.0,"enc":3297501.0,"data":2198334.0,"mhz":3083.0,"rd":0.7,"wr":0.5,"pkgw":503.87},{"wl":"cache","tpc":2.0,"cores":128.0,"procs":256.0,"enc":6570596.0,"data":4380397.0,"mhz":3078.0,"rd":0.7,"wr":0.5,"pkgw":698.99},{"wl":"dram","tpc":1.0,"cores":1.0,"procs":1.0,"enc":25426.0,"data":16951.0,"mhz":3593.0,"rd":5.7,"wr":2.5,"pkgw":314.66},{"wl":"dram","tpc":1.0,"cores":2.0,"procs":2.0,"enc":39371.0,"data":26248.0,"mhz":3593.0,"rd":24.1,"wr":9.8,"pkgw":314.19},{"wl":"dram","tpc":1.0,"cores":4.0,"procs":4.0,"enc":64068.0,"data":42712.0,"mhz":3593.0,"rd":52.7,"wr":18.6,"pkgw":323.48},{"wl":"dram","tpc":1.0,"cores":8.0,"procs":8.0,"enc":92143.0,"data":61429.0,"mhz":3593.0,"rd":84.9,"wr":28.8,"pkgw":337.03},{"wl":"dram","tpc":1.0,"cores":16.0,"procs":16.0,"enc":110405.0,"data":73603.0,"mhz":3593.0,"rd":91.2,"wr":36.1,"pkgw":346.39},{"wl":"dram","tpc":1.0,"cores":32.0,"procs":32.0,"enc":129095.0,"data":86064.0,"mhz":3593.0,"rd":85.4,"wr":42.9,"pkgw":371.14},{"wl":"dram","tpc":1.0,"cores":64.0,"procs":64.0,"enc":255894.0,"data":170596.0,"mhz":3593.0,"rd":168.5,"wr":85.0,"pkgw":447.23},{"wl":"dram","tpc":1.0,"cores":128.0,"procs":128.0,"enc":525147.0,"data":350098.0,"mhz":3593.0,"rd":345.1,"wr":173.2,"pkgw":601.28},{"wl":"dram","tpc":2.0,"cores":1.0,"procs":2.0,"enc":21905.0,"data":14603.0,"mhz":3593.0,"rd":13.4,"wr":5.2,"pkgw":307.89},{"wl":"dram","tpc":2.0,"cores":2.0,"procs":4.0,"enc":37580.0,"data":25054.0,"mhz":3593.0,"rd":30.7,"wr":10.9,"pkgw":311.28},{"wl":"dram","tpc":2.0,"cores":4.0,"procs":8.0,"enc":63137.0,"data":42091.0,"mhz":3593.0,"rd":57.8,"wr":19.8,"pkgw":323.06},{"wl":"dram","tpc":2.0,"cores":8.0,"procs":16.0,"enc":89200.0,"data":59466.0,"mhz":3593.0,"rd":86.1,"wr":29.0,"pkgw":333.47},{"wl":"dram","tpc":2.0,"cores":16.0,"procs":32.0,"enc":128939.0,"data":85960.0,"mhz":3593.0,"rd":85.7,"wr":42.9,"pkgw":350.29},{"wl":"dram","tpc":2.0,"cores":32.0,"procs":64.0,"enc":132200.0,"data":88133.0,"mhz":3593.0,"rd":88.2,"wr":44.3,"pkgw":377.27},{"wl":"dram","tpc":2.0,"cores":64.0,"procs":128.0,"enc":262992.0,"data":175328.0,"mhz":3593.0,"rd":175.3,"wr":87.8,"pkgw":461.07},{"wl":"dram","tpc":2.0,"cores":128.0,"procs":256.0,"enc":527980.0,"data":351986.0,"mhz":3593.0,"rd":352.0,"wr":176.1,"pkgw":626.38}],"s7":{"avx2":{"8+4":[22862.26,22920.87,15241.51,3295.0,5.02],"10+4":[21358.35,21345.77,15255.96,3295.0,4.97],"10+4 64M":[15749.49,15885.48,11249.64,3469.0,2.27]},"avx2_gfni":{"8+4":[41361.38,41359.17,27574.25,3293.0,3.9],"10+4":[40451.36,40517.63,28893.83,3293.0,4.02],"10+4 64M":[17574.29,17777.32,12553.06,3592.0,1.42]},"avx512":{"8+4":[21358.24,21455.51,14238.83,3592.0,2.4],"10+4":[18988.46,18959.23,13563.19,3592.0,2.26],"10+4 64M":[15516.87,15655.29,11083.48,3592.0,1.53]},"avx512_gfni":{"8+4":[55740.07,56237.94,37160.05,3093.0,3.74],"10+4":[53946.25,54005.91,38533.04,3093.0,3.79],"10+4 64M":[18311.61,18226.54,13079.72,3592.0,1.21]}},"s8":[{"cfg":"1t","cpus":"2","wl":"cache","enc":54110.0,"dec":54165.0,"data":38650.0,"mhz":3093.0},{"cfg":"smt","cpus":"2,130","wl":"cache","enc":50753.0,"dec":50976.0,"data":36252.0,"mhz":3292.0},{"cfg":"2c","cpus":"2,3","wl":"cache","enc":108017.0,"dec":108153.0,"data":77155.0,"mhz":3092.0},{"cfg":"1t","cpus":"2","wl":"dram","enc":18248.0,"dec":18136.0,"data":13034.0,"mhz":3592.0},{"cfg":"smt","cpus":"2,130","wl":"dram","enc":18740.0,"dec":18795.0,"data":13385.0,"mhz":3592.0},{"cfg":"2c","cpus":"2,3","wl":"dram","enc":33111.0,"dec":33231.0,"data":23651.0,"mhz":3592.0}]},"srfsp":{"head":{"host":"srfsp   date: 2026-10-28T15:43:08+00:00","cpu":"Intel(R) Xeon(R) 6780E","topo":"Thread(s) per core: 1;Core(s) per socket: 36;Socket(s): 2;NUMA node(s): 2","flags":"avx2 gfni vpclmulqdq","freq":"max 3000.0000 MHz, governor performance","memory":"16 Configured Memory Speed: 6400 MT/s;16 Size: 32 GB;16 Type: DDR5","sw":"kernel 7.0.0-30-generic; gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0; NASM version 3.01; isa-l 76228ea","bench":"single-core cpu 2; 72 physical cores (36 per socket, 36 in first NUMA node), SMT siblings 0; scale cores: 1 2 4 8 16 32 36 64 72; procs per core: 1; isas: avx2 avx2_gfni","correctness":"erasure_code_test: 127x8192 done EC tests: Pass","note":"section 8 from run at 2026-10-29T08:37:36+00:00"},"s1":{"4+2":[34507.24,34550.7,23004.83],"6+3":[24516.5,24611.7,16344.33],"8+3":[23390.31,23716.28,17011.13],"8+4":[19826.01,19504.14,13217.34],"10+4":[18457.55,18168.03,13183.96],"12+4":[18646.79,18557.66,13985.09],"16+4":[17719.51,17633.17,14175.61],"20+4":[17360.6,16149.33,14467.17],"24+8":[8622.33,8491.45,6466.75]},"s2":{"4K":[20130.85,19938.63,13420.57],"16K":[20277.62,19988.38,13518.41],"64K":[19831.55,19428.59,13221.03],"256K":[18779.54,18517.61,12519.69],"1M":[16755.2,16760.32,11170.13]},"s3":{"6+3":[14741.68,15124.17,9827.79],"8+4":[13831.0,13749.76,9220.67],"12+4":[13089.67,13318.68,9817.25],"16+4":[12427.3,12344.99,9941.84]},"s4":{"1":[20145.84,41094.01,13430.56],"2":[20131.2,30967.55,13420.8],"3":[20082.75,23579.7,13388.5],"4":[20123.48,19912.31,13415.65]},"s5":{"encode":217.51,"decode":217.49},"s6":[{"wl":"cache","tpc":1.0,"cores":1.0,"procs":1.0,"enc":20196.0,"data":13464.0,"mhz":2994.0,"rd":0.4,"wr":0.4,"pkgw":117.79},{"wl":"cache","tpc":1.0,"cores":2.0,"procs":2.0,"enc":40029.0,"data":26686.0,"mhz":2994.0,"rd":0.4,"wr":0.4,"pkgw":120.55},{"wl":"cache","tpc":1.0,"cores":4.0,"procs":4.0,"enc":80903.0,"data":53936.0,"mhz":2994.0,"rd":0.4,"wr":0.4,"pkgw":127.41},{"wl":"cache","tpc":1.0,"cores":8.0,"procs":8.0,"enc":161258.0,"data":107505.0,"mhz":2994.0,"rd":0.4,"wr":0.4,"pkgw":137.98},{"wl":"cache","tpc":1.0,"cores":16.0,"procs":16.0,"enc":323064.0,"data":215376.0,"mhz":2994.0,"rd":0.4,"wr":0.4,"pkgw":160.99},{"wl":"cache","tpc":1.0,"cores":32.0,"procs":32.0,"enc":643709.0,"data":429140.0,"mhz":2994.0,"rd":0.4,"wr":0.4,"pkgw":205.43},{"wl":"cache","tpc":1.0,"cores":36.0,"procs":36.0,"enc":719249.0,"data":479500.0,"mhz":2994.0,"rd":0.4,"wr":0.4,"pkgw":216.86},{"wl":"cache","tpc":1.0,"cores":64.0,"procs":64.0,"enc":1279688.0,"data":853125.0,"mhz":2994.0,"rd":0.4,"wr":0.4,"pkgw":295.23},{"wl":"cache","tpc":1.0,"cores":72.0,"procs":72.0,"enc":1439076.0,"data":959384.0,"mhz":2994.0,"rd":0.4,"wr":0.4,"pkgw":324.0},{"wl":"dram","tpc":1.0,"cores":1.0,"procs":1.0,"enc":15374.0,"data":10249.0,"mhz":2994.0,"rd":7.9,"wr":3.0,"pkgw":134.84},{"wl":"dram","tpc":1.0,"cores":2.0,"procs":2.0,"enc":28477.0,"data":18984.0,"mhz":2994.0,"rd":22.0,"wr":7.6,"pkgw":140.96},{"wl":"dram","tpc":1.0,"cores":4.0,"procs":4.0,"enc":52351.0,"data":34901.0,"mhz":2994.0,"rd":46.6,"wr":15.8,"pkgw":151.89},{"wl":"dram","tpc":1.0,"cores":8.0,"procs":8.0,"enc":92507.0,"data":61671.0,"mhz":2994.0,"rd":88.1,"wr":30.2,"pkgw":172.97},{"wl":"dram","tpc":1.0,"cores":16.0,"procs":16.0,"enc":139242.0,"data":92828.0,"mhz":2994.0,"rd":136.2,"wr":45.7,"pkgw":192.57},{"wl":"dram","tpc":1.0,"cores":32.0,"procs":32.0,"enc":179432.0,"data":119621.0,"mhz":2994.0,"rd":179.1,"wr":59.9,"pkgw":225.01},{"wl":"dram","tpc":1.0,"cores":36.0,"procs":36.0,"enc":183191.0,"data":122128.0,"mhz":2994.0,"rd":180.8,"wr":60.3,"pkgw":232.19},{"wl":"dram","tpc":1.0,"cores":64.0,"procs":64.0,"enc":167996.0,"data":111997.0,"mhz":2994.0,"rd":166.4,"wr":75.8,"pkgw":381.68},{"wl":"dram","tpc":1.0,"cores":72.0,"procs":72.0,"enc":168786.0,"data":112524.0,"mhz":2994.0,"rd":167.4,"wr":76.1,"pkgw":395.12}],"s7":{"avx2":{"8+4":[8160.61,8095.56,5440.41,2994.0,1.96],"10+4":[7695.13,7635.54,5496.52,2994.0,1.96],"10+4 64M":[6321.72,6385.81,4515.51,2890.0,2.34]},"avx2_gfni":{"8+4":[20210.82,19950.94,13473.88,2994.0,2.09],"10+4":[19320.73,18081.07,13800.52,2994.0,2.04],"10+4 64M":[13315.17,13491.58,9510.84,2887.0,2.2]}},"s8":[{"cfg":"1t","cpus":"2","wl":"cache","enc":19355.0,"dec":18146.0,"data":13825.0,"mhz":2994.0},{"cfg":"2c","cpus":"2,3","wl":"cache","enc":38679.0,"dec":36234.0,"data":27628.0,"mhz":2994.0},{"cfg":"1t","cpus":"2","wl":"dram","enc":13411.0,"dec":13524.0,"data":9579.0,"mhz":2886.0},{"cfg":"2c","cpus":"2,3","wl":"dram","enc":26065.0,"dec":26485.0,"data":18618.0,"mhz":2892.0}]}}/*DATA_END*/;
+
+const M = [
+  {id:"srfsp", name:"Xeon 6780E", tag:"SRF", c:"#2f6fde", core:"E-core (Crestmont)", sockets:2, cps:36, smt:false, peak:409.6, pl1:"330 W × 2",
+   cpu:"2 sockets × 36 cores online (1 per L2 module), no SMT, max 3.0 GHz (base 2.2)", isa:"AVX2 + GFNI → <code>avx2_gfni</code>",
+   cache:"L2 4 MB per module, L3 108 MB per socket", mem:"16 × 32 GB DDR5-6400, 8 channels per socket, 2 NUMA nodes", sw:"Linux 7.0.0, GCC 15.2, NASM 3.01"},
+  {id:"cwf", name:"Xeon 6992E+C", tag:"CWF", c:"#1aa37a", core:"E-core (Darkmont)", sockets:1, cps:288, smt:false, peak:614.4, pl1:"550 W",
+   cpu:"1 socket × 288 cores, no SMT, max 3.2 GHz (base 2.5)", isa:"AVX2 + GFNI → <code>avx2_gfni</code>",
+   cache:"L2 4 MB per 4-core module, L3 576 MB", mem:"12 × 32 GB DDR5-6400, 12 channels, SNC3 (3 nodes × 96 cores)", sw:"Linux 6.12.0 (el10), GCC 14.4, NASM 2.16"},
+  {id:"emr06", name:"Xeon 8576C", tag:"EMR", c:"#f08c2e", core:"P-core (Raptor Cove)", sockets:2, cps:56, smt:true, peak:358.4, pl1:"385 W × 2",
+   cpu:"2 sockets × 56 cores, SMT2, max 4.0 GHz (base 2.5)", isa:"AVX-512 + GFNI → <code>avx512_gfni</code>",
+   cache:"L2 2 MB per core, L3 280 MB per socket", mem:"16 × 32 GB DDR5-5600, 8 channels per socket, SNC2 (4 nodes × 28 cores)", sw:"Linux 6.12.0, GCC 11.5, NASM 2.15"},
+  {id:"gnrsp", name:"Xeon 6767P", tag:"GNR", c:"#c2408f", core:"P-core (Redwood Cove)", sockets:2, cps:64, smt:true, peak:409.6, pl1:"350 W × 2",
+   cpu:"2 sockets × 64 cores, SMT2, max 3.9 GHz (base 2.4)", isa:"AVX-512 + GFNI → <code>avx512_gfni</code>",
+   cache:"L2 2 MB per core, L3 336 MB per socket", mem:"16 × 32 GB DDR5-6400, 8 channels per socket, SNC2 (4 nodes × 32 cores)", sw:"Linux 6.8.0, GCC 13.3, NASM 2.16"}
+];
+const R = id => RESULTS[id];
+const NS = "http://www.w3.org/2000/svg";
+const f1 = v => v == null ? "–" : (v / 1000).toFixed(1);
+const f0 = v => v == null ? "–" : Math.round(v).toLocaleString("en-US");
+const pct = v => (v >= 0 ? "+" : "") + (v * 100).toFixed(0) + "%";
+const label = m => `${m.tag} ${m.name}`;
+
+function el(tag, attrs, parent, text) {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (text !== undefined) e.textContent = text;
+  parent && parent.appendChild(e);
+  return e;
+}
+
+function legend(host, series, bar) {
+  const d = document.createElement("div");
+  d.className = "legend";
+  d.innerHTML = series.map(s => `<span><i class="${bar ? "bar" : ""}" style="background:${s.c};${s.dash ? "background:repeating-linear-gradient(90deg," + s.c + " 0 5px,transparent 5px 8px)" : ""}"></i>${s.n}</span>`).join("");
+  host.appendChild(d);
+}
+
+function niceStep(range) {
+  const raw = range / 6, p = Math.pow(10, Math.floor(Math.log10(raw)));
+  return [1, 2, 2.5, 5, 10].map(m => m * p).find(s => s >= raw);
+}
+
+function yaxis(svg, W, H, m, ymin, ymax, ylabel) {
+  const step = niceStep(ymax - ymin);
+  for (let y = Math.ceil(ymin / step) * step; y <= ymax + 1e-9; y += step) {
+    const py = H - m.b - (H - m.t - m.b) * (y - ymin) / (ymax - ymin);
+    el("line", {x1:m.l, x2:W-m.r, y1:py, y2:py, stroke:"#e5e7eb"}, svg);
+    el("text", {x:m.l-6, y:py+4, "text-anchor":"end"}, svg, +y.toFixed(2));
+  }
+  el("text", {x:8, y:m.t-10}, svg, ylabel);
+}
+
+function bars(id, cats, series, ylabel, scale = 1000) {
+  const host = document.getElementById(id), W = 1100, H = 300, m = {l:52, r:10, t:28, b:30};
+  legend(host, series, true);
+  const svg = el("svg", {viewBox:`0 0 ${W} ${H}`, width:"100%"}, host);
+  const ymax = Math.max(...series.flatMap(s => s.v.filter(v => v != null))) / scale * 1.12;
+  yaxis(svg, W, H, m, 0, ymax, ylabel);
+  const gw = (W - m.l - m.r) / cats.length, bw = Math.min(34, gw * 0.84 / series.length);
+  cats.forEach((c, i) => {
+    const x0 = m.l + gw * i + (gw - bw * series.length) / 2;
+    series.forEach((s, j) => {
+      if (s.v[i] == null) return;
+      const v = s.v[i] / scale, h = (H - m.t - m.b) * v / ymax;
+      el("rect", {x:x0 + j*bw, y:H-m.b-h, width:bw-2, height:h, fill:s.c, rx:2}, svg);
+      el("text", {x:x0 + j*bw + bw/2 - 1, y:H-m.b-h-4, "text-anchor":"middle", style:"font-size:9.5px"}, svg, v >= 100 ? v.toFixed(0) : v.toFixed(1));
+    });
+    el("text", {x:m.l + gw*i + gw/2, y:H-m.b+18, "text-anchor":"middle"}, svg, c);
+  });
+}
+
+// series: {n, c, dash, pts:[[x, y], ...]}; log2 x axis unless opt.lin
+function lines(id, series, opt) {
+  const host = document.getElementById(id), W = opt.w || 1100, H = opt.h || 360, m = {l:56, r:16, t:28, b:40};
+  legend(host, series);
+  const svg = el("svg", {viewBox:`0 0 ${W} ${H}`, width:"100%"}, host);
+  const ys = series.flatMap(s => s.pts.map(p => p[1]));
+  const ymin = opt.ymin ?? 0, ymax = opt.ymax ?? Math.max(...ys) * 1.08;
+  yaxis(svg, W, H, m, ymin, ymax, opt.ylabel);
+  const xmax = opt.lin ? opt.xmax : Math.log2(opt.xmax);
+  const px = x => m.l + (W - m.l - m.r) * (opt.lin ? x : Math.log2(x)) / xmax;
+  const py = y => H - m.b - (H - m.t - m.b) * (y - ymin) / (ymax - ymin);
+  opt.xticks.forEach(t => {
+    el("line", {x1:px(t), x2:px(t), y1:m.t, y2:H-m.b, stroke:"#f1f5f9"}, svg);
+    el("text", {x:px(t), y:H-m.b+16, "text-anchor":"middle", style:"font-size:11px"}, svg, t);
+  });
+  el("text", {x:(W + m.l) / 2, y:H-4, "text-anchor":"middle"}, svg, opt.xlabel || "Physical cores (log scale)");
+  (opt.hlines || []).forEach(h => {
+    el("line", {x1:m.l, x2:W-m.r, y1:py(h.y), y2:py(h.y), stroke:h.c, "stroke-dasharray":"2 4", "stroke-width":1.5}, svg);
+    el("text", {x:W-m.r-4, y:py(h.y)-4, "text-anchor":"end", style:`font-size:11px;fill:${h.c}`}, svg, h.t);
+  });
+  series.forEach(s => {
+    el("polyline", {points: s.pts.map(p => `${px(p[0])},${py(p[1])}`).join(" "), fill:"none", stroke:s.c, "stroke-width":s.w || 2.2, "stroke-dasharray":s.dash ? "6 4" : ""}, svg);
+    if (!s.nodots) s.pts.forEach(p => el("circle", {cx:px(p[0]), cy:py(p[1]), r:3, fill:s.c}, svg));
+  });
+}
+
+function table(id, head, rows) {
+  document.getElementById(id).innerHTML =
+    "<tr>" + head.map(h => `<th>${h}</th>`).join("") + "</tr>" +
+    rows.map(r => "<tr>" + r.map(c => `<td>${c}</td>`).join("") + "</tr>").join("");
+}
+
+const s6 = (id, wl, tpc) => R(id).s6.filter(r => r.wl === wl && r.tpc === tpc);
+const s6at = (id, wl, tpc, cores) => s6(id, wl, tpc).find(r => r.cores === cores);
+const s6max = (id, wl, tpc) => s6(id, wl, tpc).slice(-1)[0];
+const enc = v => v && v[0];
+// effective data = encode × k/(k+p)
+const data = v => v && v[2];
+
+// KPIs
+document.getElementById("kpis").innerHTML = M.map(m => {
+  const r = R(m.id), full = s6max(m.id, "cache", 1);
+  const dramSock = m.id === "srfsp" ? s6at(m.id, "dram", 1, 36) : s6max(m.id, "dram", 1);
+  const perSock = m.id === "srfsp" ? dramSock.data : dramSock.data / m.sockets;
+  return `<div class="kpi" style="border-color:${m.c}"><div class="t" style="color:${m.c}">${label(m)}</div>
+    <div class="l">${m.core}</div>
+    <div class="l">Single core 8+4, cache / DRAM</div><div><b>${f1(data(r.s1["8+4"]))}</b> / <b>${f1(data(r.s3["8+4"]))}</b> GB/s</div>
+    <div class="l">Whole machine, cache-resident (${full.cores} cores)</div><div><b>${(full.data / 1e6).toFixed(2)}</b> TB/s</div>
+    <div class="l">Per socket, memory bound</div><div><b>${f0(perSock / 1000)}</b> GB/s</div></div>`;
+}).join("");
+
+// environment
+const envRows = [["Model / core", m => `${m.name} (${m.tag})<br>${m.core}`], ["CPU", m => m.cpu], ["ISA / default path", m => m.isa],
+  ["Caches", m => m.cache], ["Memory", m => m.mem], ["Theoretical memory bandwidth", m => `${m.peak} GB/s per socket`], ["Package power limit PL1", m => m.pl1],
+  ["Software", m => m.sw], ["Result file", m => `<code>results/${m.id}.txt</code>`]];
+table("t-env", [""].concat(M.map(label)), envRows.map(([k, f]) => [k].concat(M.map(f))));
+
+// 1. k+p
+const kps = Object.keys(R("srfsp").s1);
+bars("c-kp", kps, M.map(m => ({n:label(m), c:m.c, v:kps.map(k => data(R(m.id).s1[k]))})), "Effective data GB/s");
+table("t-kp", ["k+p"].concat(M.flatMap(m => [`${m.tag} effective`, "encode"])),
+  kps.map(k => [k].concat(M.flatMap(m => { const v = R(m.id).s1[k]; return [f1(v[2]), f1(v[0])]; }))));
+
+// 2. chunk
+const chunks = Object.keys(R("srfsp").s2);
+bars("c-chunk", chunks, M.map(m => ({n:label(m), c:m.c, v:chunks.map(k => data(R(m.id).s2[k]))})), "Effective data GB/s");
+table("t-chunk", ["Chunk"].concat(M.map(m => `${m.tag} effective (GB/s)`), M.map(m => `${m.tag} vs 4K`)),
+  chunks.map(k => [k].concat(M.map(m => f1(data(R(m.id).s2[k]))), M.map(m => (data(R(m.id).s2[k]) / data(R(m.id).s2["4K"]) * 100).toFixed(0) + "%"))));
+
+// 3. cache vs DRAM
+const dkps = Object.keys(R("srfsp").s3);
+bars("c-dram", dkps, M.map(m => ({n:`${label(m)} DRAM`, c:m.c, v:dkps.map(k => data(R(m.id).s3[k]))})), "Effective data GB/s");
+table("t-dram", ["k+p"].concat(M.flatMap(m => [`${m.tag} cache`, "DRAM", "Change"])),
+  dkps.map(k => [k].concat(M.flatMap(m => { const c = data(R(m.id).s1[k]), d = data(R(m.id).s3[k]); return [f1(c), f1(d), pct(d / c - 1)]; }))));
+
+// 4. erasures
+const es = Object.keys(R("srfsp").s4);
+bars("c-err", es.map(e => `e=${e}`), M.map(m => ({n:`${label(m)} decode`, c:m.c, v:es.map(e => R(m.id).s4[e][1])})), "Decode GB/s");
+
+// 5. ISA paths
+const isas = ["avx2", "avx2_gfni", "avx512", "avx512_gfni"];
+const isa = (m, i, key = "8+4") => (R(m.id).s7[i] || {})[key];
+bars("c-isa", isas, M.map(m => ({n:label(m), c:m.c, v:isas.map(i => data(isa(m, i)))})), "Effective data GB/s");
+table("t-isa", ["Implementation"].concat(M.flatMap(m => [`${m.tag} effective GB/s`, "MHz", "IPC", "Bytes/cycle"])),
+  isas.map(i => [`<code>${i}</code>`].concat(M.flatMap(m => {
+    const v = isa(m, i);
+    return v ? [f1(v[2]), f0(v[3]), v[4].toFixed(2), (v[2] / v[3]).toFixed(1)] : ["–", "–", "–", "–"];
+  }))));
+
+// 6. scalar
+table("t-base", ["Platform", "Plain C effective (MB/s)", "Default SIMD path effective (MB/s)", "Speed-up"],
+  M.map(m => { const b = R(m.id).s5.encode * 10 / 14, s = data(R(m.id).s1["10+4"]); return [label(m), f0(b), f0(s), (s / b).toFixed(0) + "×"]; }));
+
+// 7. scaling, cache
+const ticks = [1, 2, 4, 8, 16, 28, 36, 56, 96, 128, 288];
+const sser = (wl, key, f = r => r[key]) => M.flatMap(m => (m.smt ? [1, 2] : [1]).map(t => ({
+  n: `${m.tag}${m.smt ? (t === 1 ? " 1 proc/core" : " 2 procs/core") : ""}`, c:m.c, dash:t === 2,
+  pts: s6(m.id, wl, t).map(r => [r.cores, f(r)])})));
+lines("c-sc-cache", sser("cache", "data", r => r.data / 1000), {xmax:300, xticks:ticks, ylabel:"Effective data GB/s", h:380});
+lines("c-sc-mhz", sser("cache", "mhz"), {xmax:300, xticks:[1, 4, 16, 64, 288], ymin:2000, ymax:4000, ylabel:"MHz", w:560, h:320});
+lines("c-sc-pwr", sser("cache", "pkgw"), {xmax:300, xticks:[1, 4, 16, 64, 288], ylabel:"W", w:560, h:320});
+table("t-sc-cache", ["Platform", "Cores", "Procs/core", "Effective (GB/s)", "Per core (GB/s)", "Scaling eff.", "Freq (MHz)", "vs 1-core freq", "Package power (W)", "Effective/power (GB/s/W)"],
+  M.flatMap(m => (m.smt ? [1, 2] : [1]).flatMap(t => {
+    const rows = s6(m.id, "cache", t), r1 = s6(m.id, "cache", 1)[0];
+    return rows.filter((r, i) => i === 0 || i === rows.length - 1 || [16, 28, 32, 36, 56, 64, 96, 128].includes(r.cores)).map(r => [
+      label(m), r.cores, t, f1(r.data), f1(r.data / r.cores), (r.data / (r1.data * r.cores) * 100).toFixed(0) + "%", f0(r.mhz),
+      (r.mhz / r1.mhz * 100).toFixed(0) + "%", f0(r.pkgw), (r.data / 1000 / r.pkgw).toFixed(2)]);
+  })));
+
+// 8. scaling, DRAM
+lines("c-sd-data", sser("dram", "data", r => r.data / 1000), {xmax:300, xticks:[1, 4, 16, 28, 64, 128, 288], ylabel:"GB/s", w:560, h:340});
+lines("c-sd-bw", sser("dram", "bw", r => r.rd + r.wr), {xmax:300, xticks:[1, 4, 16, 28, 64, 128, 288], ylabel:"GB/s", w:560, h:340});
+table("t-sd", ["Platform", "Cores", "Procs/core", "Effective (GB/s)", "Mem read (GB/s)", "Mem write (GB/s)", "Read+write", "Theoretical", "Utilization", "Traffic per source byte", "Freq (MHz)", "Package power (W)"],
+  M.flatMap(m => (m.smt ? [1, 2] : [1]).flatMap(t => s6(m.id, "dram", t).map(r => {
+    // SRF node 1 memory is taken by a VM, so only one socket's memory is usable
+    const used = m.id === "srfsp" ? 1 : Math.ceil(r.cores / m.cps);
+    const peak = m.peak * used, bw = r.rd + r.wr;
+    return [label(m), r.cores, t, f1(r.data), r.rd.toFixed(1), r.wr.toFixed(1), bw.toFixed(1), peak.toFixed(0),
+      (bw / peak * 100).toFixed(0) + "%", (bw * 1000 / r.data).toFixed(2), f0(r.mhz), f0(r.pkgw)];
+  }))));
+
+// 9. SMT
+const smtRows = [];
+M.filter(m => m.smt).forEach(m => ["cache", "dram"].forEach(wl => s6(m.id, wl, 1).forEach(r1 => {
+  const r2 = s6at(m.id, wl, 2, r1.cores);
+  if (!r2 || ![1, 16, 28, 32, 56, 64, 112, 128].includes(r1.cores)) return;
+  smtRows.push([label(m), wl === "cache" ? "Cache" : "DRAM", r1.cores, f1(r1.data), f1(r2.data), pct(r2.data / r1.data - 1), f0(r1.mhz), f0(r2.mhz)]);
+})));
+table("t-smt", ["Platform", "Workload", "Physical cores", "1 proc/core effective (GB/s)", "2 procs/core effective (GB/s)", "Change", "Freq 1 proc/core", "Freq 2 procs/core"], smtRows);
+
+// 10. analysis tables
+table("t-why1", ["", ...M.map(label)], [
+  ["Default path", ...M.map(m => m.smt ? "avx512_gfni" : "avx2_gfni")],
+  ["8+4 effective (GB/s)", ...M.map(m => { const i = m.smt ? "avx512_gfni" : "avx2_gfni"; return f1(isa(m, i)[2]); })],
+  ["Actual frequency (MHz)", ...M.map(m => { const i = m.smt ? "avx512_gfni" : "avx2_gfni"; return f0(isa(m, i)[3]); })],
+  ["IPC", ...M.map(m => { const i = m.smt ? "avx512_gfni" : "avx2_gfni"; return isa(m, i)[4].toFixed(2); })],
+  ["Source bytes per cycle", ...M.map(m => { const i = m.smt ? "avx512_gfni" : "avx2_gfni"; const v = isa(m, i); return (v[2] / v[3]).toFixed(1); })],
+  ["avx2_gfni bytes per cycle", ...M.map(m => { const v = isa(m, "avx2_gfni"); return (v[2] / v[3]).toFixed(1); })],
+  ["GFNI vs table lookup", ...M.map(m => { const i = m.smt ? "avx512_gfni" : "avx2_gfni"; return (isa(m, i)[0] / isa(m, "avx2")[0]).toFixed(1) + "×"; })]]);
+table("t-why2", ["", ...M.map(label)], [
+  ["Cores at full load", ...M.map(m => s6max(m.id, "cache", 1).cores)],
+  ["1 core → full load frequency (MHz)", ...M.map(m => `${f0(s6(m.id, "cache", 1)[0].mhz)} → ${f0(s6max(m.id, "cache", 1).mhz)}`)],
+  ["Full-load package power / PL1", ...M.map(m => `${f0(s6max(m.id, "cache", 1).pkgw)} W / ${m.pl1}`)],
+  ["Scaling efficiency", ...M.map(m => { const r1 = s6(m.id, "cache", 1)[0], r = s6max(m.id, "cache", 1); return (r.data / (r1.data * r.cores) * 100).toFixed(0) + "%"; })],
+  ["Full-load effective data (TB/s)", ...M.map(m => (s6max(m.id, "cache", 1).data / 1e6).toFixed(2))]]);
+
+// 11. CWF per-core sweep
+const FQ = RESULTS.freq || {}, HOLD = (RESULTS.hold || {}).cwf_hold || [];
+const CFS = [
+  {k:"cwf_freq_ec", n:"EC default path, packed, back to back", c:"#1aa37a", nodots:true},
+  {k:"cwf_freq_ec_spread", n:"EC, spread placement", c:"#2f6fde"},
+  {k:"cwf_freq_ec_cold", n:"EC, packed, cold start", c:"#f08c2e"},
+  {k:"cwf_freq_avx2", n:"avx2 table lookup, packed, back to back", c:"#9ca3af", dash:true},
+  {k:"cwf_freq_base", n:"Plain C, packed, back to back", c:"#c2408f", dash:true},
+  {k:"cwf_freq_base_cold", n:"Plain C, packed, cold start", c:"#7c3aed"}].filter(s => FQ[s.k] && FQ[s.k].length);
+const cfTicks = [1, 24, 44, 72, 96, 144, 192, 240, 288];
+const cfSer = (key, only) => CFS.filter(s => !only || only.includes(s.k)).map(s => ({...s,
+  pts: FQ[s.k].filter(r => r[key] != null).map(r => [r.n, key === "data" ? r.data / 1000 : r[key]])}));
+if (FQ.cwf_freq_ec) {
+  const one = FQ.cwf_freq_ec[0].data / 1000;
+  lines("c-cf-data", [...cfSer("data", ["cwf_freq_ec", "cwf_freq_ec_spread", "cwf_freq_ec_cold"]),
+    {n:"Ideal linear (1 core × cores)", c:"#cbd5e1", dash:true, nodots:true, pts:[[1, one], [288, one * 288]]}],
+    {lin:true, xmax:290, xticks:cfTicks, ylabel:"Effective data GB/s", xlabel:"Active physical cores", h:340});
+  lines("c-cf-mhz", cfSer("mhz"), {lin:true, xmax:290, xticks:[1, 44, 96, 144, 192, 240, 288], ymin:1800, ymax:3300, ylabel:"MHz", xlabel:"Active physical cores", w:560, h:340,
+    hlines:[{y:3200, t:"Turbo ≤18 cores 3.2 GHz", c:"#64748b"}, {y:2900, t:"≥55 cores 2.9 GHz", c:"#64748b"}, {y:2500, t:"Base 2.5 GHz", c:"#ef4444"}]});
+  lines("c-cf-pwr", cfSer("pkgw"), {lin:true, xmax:290, xticks:[1, 44, 96, 144, 192, 240, 288], ymin:0, ymax:620, ylabel:"W", xlabel:"Active physical cores", w:560, h:340,
+    hlines:[{y:550, t:"PL1 = TDP 550 W", c:"#ef4444"}]});
+  lines("c-cf-tmp", cfSer("pkgtmp"), {lin:true, xmax:290, xticks:[1, 44, 96, 144, 192, 240, 288], ymin:40, ymax:112, ylabel:"°C", xlabel:"Active physical cores", w:560, h:340,
+    hlines:[{y:107, t:"TjMax 107 °C", c:"#ef4444"}]});
+  const at = (k, n) => (FQ[k] || []).find(r => r.n === n);
+  const keyN = [1, 18, 23, 24, 25, 36, 40, 44, 54, 55, 72, 96, 128, 144, 192, 240, 288];
+  table("t-cf-key", ["Cores", "Effective (GB/s)", "Per core (GB/s)", "Scaling eff.", "Freq (MHz)", "Power (W)", "Temp (°C)", "Thermal status", "Throttle events"],
+    keyN.map(n => at("cwf_freq_ec", n)).filter(Boolean).map(r => [r.n, f1(r.data), f1(r.data / r.n), (r.data / 1000 / one / r.n * 100).toFixed(0) + "%",
+      f0(r.mhz), r.pkgw == null ? "–" : f0(r.pkgw), f0(r.pkgtmp), r.therm, f0(r.thr)]));
+  const cmpN = [1, 18, 24, 44, 48, 72, 96, 144, 192, 240, 288];
+  const cmpRows = [];
+  cmpN.forEach(n => CFS.forEach(s => { const r = at(s.k, n); if (r) cmpRows.push([n, s.n, f1(r.data), f0(r.mhz), r.pkgw == null ? "–" : f0(r.pkgw), f0(r.pkgtmp), r.therm, f0(r.thr)]); }));
+  table("t-cf-cmp", ["Cores", "Workload / placement / state", "Effective (GB/s)", "Freq (MHz)", "Power (W)", "Temp (°C)", "Thermal status", "Throttle events"], cmpRows);
+}
+table("t-cf-hold", ["Time (s)", "Freq (MHz)", "Temp (°C)", "Package power (W)"],
+  HOLD.map(r => [r["t(s)"], f0(r.Bzy_MHz), f0(r.PkgTmp), r.PkgWatt.toFixed(0)]));
+
+// 12. per-vCPU comparison, 10+4
+const s8 = (m, cfg, wl) => (R(m.id).s8 || []).find(r => r.cfg === cfg && r.wl === wl);
+// 2 vCPUs: two hyper-threads of one P-core, or two separate E-cores
+const two = m => m.smt ? "smt" : "2c";
+const VC = [
+  {n:"1 vCPU (1 thread)", c:"#94a3b8", f:m => "1t"},
+  {n:"2 vCPUs (P-core: 2 hyper-threads of one core; E-core: 2 cores)", c:"#2563eb", f:two},
+  {n:"CWF: 2 cores in the same L2 module", c:"#1aa37a", f:m => "2c_l2"},
+  {n:"P-core: 2 physical cores (4 vCPUs)", c:"#f59e0b", f:m => m.smt ? "2c" : null}];
+["cache", "dram"].forEach(wl => bars(`c-vc-${wl}`, M.map(m => m.tag),
+  VC.map(s => ({n:s.n, c:s.c, v:M.map(m => { const r = s.f(m) && s8(m, s.f(m), wl); return r ? r.data : null; })})), "Effective data GB/s"));
+const cfgName = (m, cfg) => ({"1t":"1 thread", smt:"2 hyper-threads of one physical core", "2c_l2":"2 cores in the same L2 module", "2c":"2 separate physical cores"})[cfg];
+const vcpus = (m, cfg) => cfg === "1t" ? 1 : cfg === "2c" && m.smt ? 4 : 2;
+table("t-vc", ["Platform", "Configuration", "CPUs", "vCPUs used", "Cache (GB/s)", "vs 1 thread", "Memory (GB/s)", "vs 1 thread", "Per vCPU, cache", "Per vCPU, memory", "Freq (MHz) cache / memory"],
+  M.flatMap(m => ["1t", "smt", "2c_l2", "2c"].map(cfg => {
+    const c = s8(m, cfg, "cache"), d = s8(m, cfg, "dram"), c1 = s8(m, "1t", "cache"), d1 = s8(m, "1t", "dram");
+    if (!c || !d) return null;
+    const v = vcpus(m, cfg);
+    return [label(m), cfgName(m, cfg), c.cpus, v, f1(c.data), (c.data / c1.data).toFixed(2) + "×", f1(d.data), (d.data / d1.data).toFixed(2) + "×",
+      f1(c.data / v), f1(d.data / v), `${f0(c.mhz)} / ${f0(d.mhz)}`];
+  }).filter(Boolean)));
+</script>
+</body>
+</html>

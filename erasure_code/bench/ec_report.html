@@ -84,7 +84,7 @@
     <tr><th>指标</th><th>命令 / 来源</th><th>原理</th><th>注意事项</th></tr>
     <tr><td><b>实际频率</b>（多核、逐核扫描）</td>
       <td><code>perf stat -x, -C &lt;所用 CPU 列表&gt; -e cycles -- sleep 3</code></td>
-      <td><code>cycles</code> 是核心在非空闲状态下按实际时钟（含睡频、降频）走过的周期数。perf 同时给出计数器在各 CPU 上的运行时间之和，频率 = cycles ÷ 运行时间。测试进程把这些 CPU 占满，所以得到的就是这段时间内所用核的平均实际频率。</td>
+      <td><code>cycles</code> 是核心在非空闲状态下按实际时钟（含睿频、降频）走过的周期数。perf 同时给出计数器在各 CPU 上的运行时间之和，频率 = cycles ÷ 运行时间。测试进程把这些 CPU 占满，所以得到的就是这段时间内所用核的平均实际频率。</td>
       <td>是采样窗口内、所有所用核的平均值，看不到单个核的差异和秒级以下的波动。</td></tr>
     <tr><td><b>频率和 IPC</b>（单核，第 5 节）</td>
       <td><code>perf stat -e cycles,instructions,task-clock taskset -c 2 erasure_code_perf ...</code></td>
@@ -114,7 +114,7 @@
       <td><code>perf stat -x, -a -e uncore_imc/event=0x05,umask=0xcf/,uncore_imc/event=0x05,umask=0xf0/ ...</code></td>
       <td>内存控制器的 CAS 读（umask 0xcf）/写（umask 0xf0）次数 × 64 B ÷ 时间。Xeon 6（SRF/GNR/CWF）的 DDR5 两个子通道分别是 event 0x05 和 0x06，脚本两个都读。</td>
       <td>GNR/CWF 内核自带的 <code>cas_count_read</code> 别名只含一个子通道，直接用会少算一半。</td></tr>
-    <tr><td><b>睡频表、TDP、功耗上限、TjMax</b></td>
+    <tr><td><b>睿频表、TDP、功耗上限、TjMax</b></td>
       <td><code>turbostat --interval 1 --num_iterations 1</code> 启动时打印的配置；<code>/sys/class/powercap/intel-rapl:0/constraint_*</code></td>
       <td>MSR_TURBO_RATIO_LIMIT / LIMIT1（0x1AD/0x1AE，各档最高倍频及对应的活动核数）、MSR_PKG_POWER_INFO（0x614，TDP）、MSR_PKG_POWER_LIMIT（PL1/PL2 及时间窗口）、MSR_IA32_TEMPERATURE_TARGET（TjMax）。</td>
       <td>是当前 BIOS/固件配置的实际值，可能与官方规格不同。</td></tr>
@@ -537,7 +537,7 @@ if (FQ.cwf_freq_ec) {
     {n:"理想线性（单核 × 核数）", c:"#cbd5e1", dash:true, nodots:true, pts:[[1, one], [288, one * 288]]}],
     {lin:true, xmax:290, xticks:cfTicks, ylabel:"有效数据 GB/s", xlabel:"活动物理核数", h:340});
   lines("c-cf-mhz", cfSer("mhz"), {lin:true, xmax:290, xticks:[1, 44, 96, 144, 192, 240, 288], ymin:1800, ymax:3300, ylabel:"MHz", xlabel:"活动物理核数", w:560, h:340,
-    hlines:[{y:3200, t:"睡频表 ≤18 核 3.2 GHz", c:"#64748b"}, {y:2900, t:"≥55 核 2.9 GHz", c:"#64748b"}, {y:2500, t:"基础频率 2.5 GHz", c:"#ef4444"}]});
+    hlines:[{y:3200, t:"睿频表 ≤18 核 3.2 GHz", c:"#64748b"}, {y:2900, t:"≥55 核 2.9 GHz", c:"#64748b"}, {y:2500, t:"基础频率 2.5 GHz", c:"#ef4444"}]});
   lines("c-cf-pwr", cfSer("pkgw"), {lin:true, xmax:290, xticks:[1, 44, 96, 144, 192, 240, 288], ymin:0, ymax:620, ylabel:"W", xlabel:"活动物理核数", w:560, h:340,
     hlines:[{y:550, t:"PL1 = TDP 550 W", c:"#ef4444"}]});
   lines("c-cf-tmp", cfSer("pkgtmp"), {lin:true, xmax:290, xticks:[1, 44, 96, 144, 192, 240, 288], ymin:40, ymax:112, ylabel:"°C", xlabel:"活动物理核数", w:560, h:340,
