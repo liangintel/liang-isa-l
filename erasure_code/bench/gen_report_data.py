@@ -63,11 +63,42 @@ def parse(path):
     return r
 
 
+def parse_freq(path):
+    """freq_sweep.sh output: one dict per n= line; therm flags kept as a string."""
+    rows = []
+    for line in open(path):
+        if line.startswith("n="):
+            kv = dict(re.findall(r"(\w+)=(\S+)", line))
+            row = {k: (v if k == "therm" else float(v) if v != "na" else None) for k, v in kv.items()}
+            # turbostat occasionally reports a bogus PkgWatt when the RAPL counter wraps
+            if row.get("pkgw") and row["pkgw"] > 5000:
+                row["pkgw"] = None
+            rows.append(row)
+    return rows
+
+
+def parse_hold(path):
+    """Sustained-load turbostat summary table: header line starting with t(s), then one row per interval."""
+    rows, head = [], None
+    for line in open(path):
+        cols = line.split()
+        if cols and cols[0] == "t(s)":
+            head = cols
+        elif head and cols and cols[0].isdigit() and len(cols) == len(head):
+            rows.append(dict(zip(head, map(float, cols))))
+    return rows
+
+
 def main():
-    res = {}
+    res = {"freq": {}, "hold": {}}
     for f in sorted(os.listdir(os.path.join(BENCH, "results"))):
-        if f.endswith(".txt"):
-            res[f[:-4]] = parse(os.path.join(BENCH, "results", f))
+        path = os.path.join(BENCH, "results", f)
+        if "_freq_" in f and f.endswith(".txt"):
+            res["freq"][f[:-4]] = parse_freq(path)
+        elif "_hold" in f and f.endswith(".txt"):
+            res["hold"][f[:-4]] = parse_hold(path)
+        elif f.endswith(".txt"):
+            res[f[:-4]] = parse(path)
     html = os.path.join(BENCH, "ec_report.html")
     text = open(html).read()
     data = "/*DATA_BEGIN*/" + json.dumps(res, separators=(",", ":")) + "/*DATA_END*/"

@@ -1,0 +1,10 @@
+# host: localhost  cpu: Intel(R) Xeon? 6992E+C  date: 2026-10-29T01:05:59-04:00
+# workload: ec (k=8 p=4), core order: packed, idle 90s before each point, encode 4s per point, sampled 1.5s..3.5s; PL1=550W
+# n: active physical cores; enc/data: summed MB/s; mhz: avg actual MHz of used CPUs; pkgw: package W (all sockets); pkgtmp: max package C
+# therm: OR of IA32_PACKAGE_THERM_STATUS bits seen (T=thermal P=PROCHOT L=power limit); thr: package throttle events during the point
+n=1   enc=31380    data=20920    mhz=3193  pkgw=118.15  pkgtmp=59  therm=-   thr=0
+n=24  enc=726338   data=484225   mhz=3137  pkgw=202.89  pkgtmp=87  therm=-   thr=0
+n=44  enc=1262360  data=841573   mhz=2972  pkgw=254.80  pkgtmp=93  therm=-   thr=0
+n=96  enc=2657740  data=1771827  mhz=2872  pkgw=389.08  pkgtmp=100 therm=-   thr=0
+n=192 enc=5083857  data=3389238  mhz=2749  pkgw=569.73  pkgtmp=101 therm=L   thr=0
+n=288 enc=6578865  data=4385910  mhz=2383  pkgw=568.95  pkgtmp=88  therm=L   thr=0
