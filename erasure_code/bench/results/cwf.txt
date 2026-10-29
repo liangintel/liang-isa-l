@@ -1,0 +1,71 @@
+# host:    localhost   date: 2026-10-28T11:33:18-04:00
+# cpu:     Intel(R) Xeon? 6992E+C
+# topo:    Thread(s) per core: 1;Core(s) per socket: 288;Socket(s): 1;NUMA node(s): 3
+# flags:   avx2 gfni vpclmulqdq
+# freq:    max 3200.0000 MHz, governor performance
+# memory:  12 Configured Memory Speed: 6400 MT/s;12 Size: 32 GiB;12 Type: DDR5
+# sw:      kernel 6.12.0-243.el10.x86_64; gcc (GCC) 14.4.1 20260629 (Red Hat 14.4.1-1); NASM version 2.16 compiled on Oct 27 2026; isa-l 3d3c721
+# bench:   single-core cpu 2; 288 physical cores (288 per socket, 96 in first NUMA node), SMT siblings 0; scale cores: 1 2 4 8 16 32 64 96 128 256 288; procs per core: 1; isas: avx2 avx2_gfni
+# correctness: erasure_code_test: 127x8192 done EC tests: Pass
+# note:    section 6 from run at 2026-10-28T21:36:14-04:00; section 7 from run at 2026-10-28T21:44:59-04:00
+--- [1] k+p sweep, warm cache (default ~128KB working set), decode e=p ---
+k=4  p=2  : erasure_code_encode_warm: 55193.44 MB/s erasure_code_decode_warm: 55333.46 MB/s data: 36795.63 MB/s
+k=6  p=3  : erasure_code_encode_warm: 38873.20 MB/s erasure_code_decode_warm: 38575.34 MB/s data: 25915.47 MB/s
+k=8  p=3  : erasure_code_encode_warm: 36553.40 MB/s erasure_code_decode_warm: 36298.31 MB/s data: 26584.29 MB/s
+k=8  p=4  : erasure_code_encode_warm: 31273.81 MB/s erasure_code_decode_warm: 30709.82 MB/s data: 20849.21 MB/s
+k=10 p=4  : erasure_code_encode_warm: 29936.39 MB/s erasure_code_decode_warm: 29079.67 MB/s data: 21383.14 MB/s
+k=12 p=4  : erasure_code_encode_warm: 28352.67 MB/s erasure_code_decode_warm: 28165.13 MB/s data: 21264.50 MB/s
+k=16 p=4  : erasure_code_encode_warm: 27666.55 MB/s erasure_code_decode_warm: 26974.11 MB/s data: 22133.24 MB/s
+k=20 p=4  : erasure_code_encode_warm: 26828.55 MB/s erasure_code_decode_warm: 26448.94 MB/s data: 22357.12 MB/s
+k=24 p=8  : erasure_code_encode_warm: 15080.12 MB/s erasure_code_decode_warm: 14976.35 MB/s data: 11310.09 MB/s
+--- [2] 8+4 chunk size sweep, warm (e=4) ---
+chunk=4K    : erasure_code_encode_warm: 31160.37 MB/s erasure_code_decode_warm: 30658.56 MB/s data: 20773.58 MB/s
+chunk=16K   : erasure_code_encode_warm: 31252.49 MB/s erasure_code_decode_warm: 30662.69 MB/s data: 20834.99 MB/s
+chunk=64K   : erasure_code_encode_warm: 30470.21 MB/s erasure_code_decode_warm: 30370.59 MB/s data: 20313.47 MB/s
+chunk=256K  : erasure_code_encode_warm: 29056.05 MB/s erasure_code_decode_warm: 29455.33 MB/s data: 19370.70 MB/s
+chunk=1M    : erasure_code_encode_warm: 24889.55 MB/s erasure_code_decode_warm: 24842.93 MB/s data: 16593.03 MB/s
+--- [3] DRAM-bound: chunk 64M (working set ~1GB >> L3), decode e=p ---
+k=6  p=3  : erasure_code_encode_warm: 24614.77 MB/s erasure_code_decode_warm: 24559.74 MB/s data: 16409.85 MB/s
+k=8  p=4  : erasure_code_encode_warm: 21703.89 MB/s erasure_code_decode_warm: 21630.35 MB/s data: 14469.26 MB/s
+k=12 p=4  : erasure_code_encode_warm: 20169.08 MB/s erasure_code_decode_warm: 20261.84 MB/s data: 15126.81 MB/s
+k=16 p=4  : erasure_code_encode_warm: 19385.40 MB/s erasure_code_decode_warm: 19559.69 MB/s data: 15508.32 MB/s
+--- [4] 8+4 decode with fewer erasures, warm ---
+e=1 : erasure_code_encode_warm: 30445.02 MB/s erasure_code_decode_warm: 61276.63 MB/s data: 20296.68 MB/s
+e=2 : erasure_code_encode_warm: 31309.80 MB/s erasure_code_decode_warm: 49425.73 MB/s data: 20873.20 MB/s
+e=3 : erasure_code_encode_warm: 31307.83 MB/s erasure_code_decode_warm: 36489.62 MB/s data: 20871.89 MB/s
+e=4 : erasure_code_encode_warm: 31230.85 MB/s erasure_code_decode_warm: 30581.45 MB/s data: 20820.57 MB/s
+--- [5] scalar baseline (ec_encode_data_base, 10+4 fixed) ---
+erasure_code_base_perf: 14x9344 4
+erasure_code_base_encode_warm: runtime =    3136600 usecs, bandwidth 1032 MB in 3.1366 sec = 329.31 MB/s
+erasure_code_base_decode_warm: runtime =    3016542 usecs, bandwidth 1034 MB in 3.0165 sec = 343.07 MB/s
+--- [6] multi-core scaling, 8+4: wl=cache (default chunk) / dram (16M chunk); tpc = processes per physical core ---
+# enc/data: summed encode MB/s; mhz: avg actual MHz of used CPUs; rd/wr: system DRAM GB/s; pkgw: total package W
+wl=cache tpc=1 cores=1   procs=1   enc=31166 data=20778 mhz=3193 rd=0.3 wr=0.3 pkgw=114.09
+wl=cache tpc=1 cores=2   procs=2   enc=62511 data=41674 mhz=3193 rd=0.3 wr=0.3 pkgw=119.79
+wl=cache tpc=1 cores=4   procs=4   enc=122690 data=81793 mhz=3170 rd=0.3 wr=0.3 pkgw=127.10
+wl=cache tpc=1 cores=8   procs=8   enc=244366 data=162911 mhz=3170 rd=0.3 wr=0.3 pkgw=145.76
+wl=cache tpc=1 cores=16  procs=16  enc=490821 data=327214 mhz=3170 rd=0.3 wr=0.3 pkgw=177.28
+wl=cache tpc=1 cores=32  procs=32  enc=917118 data=611412 mhz=2972 rd=0.3 wr=0.3 pkgw=216.79
+wl=cache tpc=1 cores=64  procs=64  enc=1830094 data=1220063 mhz=2966 rd=0.3 wr=0.3 pkgw=323.79
+wl=cache tpc=1 cores=96  procs=96  enc=2621522 data=1747681 mhz=2834 rd=0.3 wr=0.3 pkgw=389.15
+wl=cache tpc=1 cores=128 procs=128 enc=3410832 data=2273888 mhz=2763 rd=0.3 wr=0.3 pkgw=455.86
+wl=cache tpc=1 cores=256 procs=256 enc=6007383 data=4004922 mhz=2447 rd=0.3 wr=0.3 pkgw=550.91
+wl=cache tpc=1 cores=288 procs=288 enc=6422569 data=4281713 mhz=2323 rd=0.3 wr=0.3 pkgw=551.83
+wl=dram  tpc=1 cores=1   procs=1   enc=24108 data=16072 mhz=3193 rd=2.9 wr=1.1 pkgw=126.66
+wl=dram  tpc=1 cores=2   procs=2   enc=35943 data=23962 mhz=3193 rd=19.0 wr=7.7 pkgw=129.16
+wl=dram  tpc=1 cores=4   procs=4   enc=26290 data=17527 mhz=3193 rd=21.4 wr=8.5 pkgw=129.23
+wl=dram  tpc=1 cores=8   procs=8   enc=47715 data=31810 mhz=3192 rd=44.3 wr=16.0 pkgw=137.59
+wl=dram  tpc=1 cores=16  procs=16  enc=73488 data=48992 mhz=3192 rd=72.3 wr=24.7 pkgw=151.32
+wl=dram  tpc=1 cores=32  procs=32  enc=102278 data=68185 mhz=2993 rd=103.5 wr=34.3 pkgw=160.68
+wl=dram  tpc=1 cores=64  procs=64  enc=119217 data=79478 mhz=2993 rd=121.8 wr=40.0 pkgw=183.26
+wl=dram  tpc=1 cores=96  procs=96  enc=122552 data=81701 mhz=2893 rd=125.1 wr=41.1 pkgw=196.86
+wl=dram  tpc=1 cores=128 procs=128 enc=225942 data=150628 mhz=2918 rd=229.4 wr=75.6 pkgw=245.63
+wl=dram  tpc=1 cores=256 procs=256 enc=363957 data=242638 mhz=2917 rd=371.3 wr=121.6 pkgw=350.68
+wl=dram  tpc=1 cores=288 procs=288 enc=368495 data=245663 mhz=2893 rd=376.0 wr=123.2 pkgw=369.20
+--- [7] forced ISA path comparison (single core) ---
+avx2         -k 8 -p 4 -e 4         : erasure_code_encode_warm: 12782.18 MB/s erasure_code_decode_warm: 12706.82 MB/s data: 8521.45 MB/s mhz=3193 ipc=2.89
+avx2         -k 10 -p 4 -e 4        : erasure_code_encode_warm: 11965.77 MB/s erasure_code_decode_warm: 11893.28 MB/s data: 8546.98 MB/s mhz=3193 ipc=2.87
+avx2         -k 10 -p 4 -e 4 -s 64M : erasure_code_encode_warm: 10098.46 MB/s erasure_code_decode_warm: 10134.42 MB/s data: 7213.19 MB/s mhz=3192 ipc=2.06
+avx2_gfni    -k 8 -p 4 -e 4         : erasure_code_encode_warm: 30320.69 MB/s erasure_code_decode_warm: 30332.46 MB/s data: 20213.79 MB/s mhz=3193 ipc=2.95
+avx2_gfni    -k 10 -p 4 -e 4        : erasure_code_encode_warm: 29610.05 MB/s erasure_code_decode_warm: 28903.42 MB/s data: 21150.04 MB/s mhz=3193 ipc=3.00
+avx2_gfni    -k 10 -p 4 -e 4 -s 64M : erasure_code_encode_warm: 20991.38 MB/s erasure_code_decode_warm: 20967.95 MB/s data: 14993.84 MB/s mhz=3192 ipc=1.91
