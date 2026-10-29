@@ -49,8 +49,8 @@
   <h2>结论摘要</h2>
   <div class="kpis" id="kpis"></div>
   <ul>
-    <li><b>单核</b>：EMR 最快（8+4 缓存内 75 GB/s），其次 GNR 56、CWF 31、SRF 20 GB/s。P-core 领先主要来自 AVX-512 + GFNI；GNR 单核低于 EMR，是因为 GNR 跑 AVX-512 + GFNI 代码时频率被限制在约 3.09 GHz（EMR 为 3.79 GHz）。CWF 比 SRF 快约 55%，几乎全部来自每周期执行能力（IPC 2.09 → 2.95），频率只高 7%。</li>
-    <li><b>多核、数据在缓存内（纯计算）</b>：整机 encode 总带宽 GNR 7.0 TB/s（128 核）＞ CWF 6.4 TB/s（单 socket 288 核）＞ EMR 5.8 TB/s（112 核）＞ SRF 1.4 TB/s（72 核）。CWF 和 EMR 满载时撞到封装功耗上限 PL1，频率分别降到初始的 73% 和 70%，扩展效率也正好是 72% 和 70%；GNR 和 SRF 满载时频率基本不变，扩展接近线性。</li>
+    <li><b>单核</b>：EMR 最快（8+4 缓存内有效数据 50 GB/s），其次 GNR 37、CWF 21、SRF 13 GB/s。P-core 领先主要来自 AVX-512 + GFNI；GNR 单核低于 EMR，是因为 GNR 跑 AVX-512 + GFNI 代码时频率被限制在约 3.09 GHz（EMR 为 3.79 GHz）。CWF 比 SRF 快约 55%，几乎全部来自每周期执行能力（IPC 2.09 → 2.95），频率只高 7%。</li>
+    <li><b>多核、数据在缓存内（纯计算）</b>：整机有效数据吞吐 GNR 4.7 TB/s（128 核）＞ CWF 4.3 TB/s（单 socket 288 核）＞ EMR 3.9 TB/s（112 核）＞ SRF 0.96 TB/s（72 核）。CWF 和 EMR 满载时撞到封装功耗上限 PL1，频率分别降到初始的 73% 和 70%，扩展效率也正好是 72% 和 70%；GNR 和 SRF 满载时频率基本不变，扩展接近线性。</li>
     <li><b>多核、数据在内存里</b>：都受内存带宽限制。按 socket 看，有效数据吞吐 CWF 246 GB/s ＞ EMR 179 ＞ GNR 175 ＞ SRF 122 GB/s。实测内存带宽利用率 CWF 81%、EMR 74%、GNR 63%、SRF 59%。</li>
     <li><b>E-core 写校验块时有额外读流量</b>：SRF/CWF 每编码 1 字节源数据要产生约 2.0 字节内存流量，P-core 在带宽饱和时只有约 1.5 字节，差别就是写校验块前先把缓存行读进来（RFO）。</li>
     <li><b>SMT 对 EC 没有收益</b>：EMR/GNR 每个物理核跑 2 个进程，数据在缓存内时总吞吐反而下降 2%–6%；数据在内存里时只在“核不多、内存还没饱和”的区间提升 12%–17%，满载时持平。</li>
@@ -68,7 +68,7 @@
   </div>
   <ul class="note">
     <li>所有数据由同一个脚本 <code>erasure_code/bench/ec_bench.sh</code> 生成，原始结果在 <code>erasure_code/bench/results/{srfsp,cwf,emr06,gnrsp}.txt</code>，本页数据由 <code>gen_report_data.py</code> 从结果文件嵌入。</li>
-    <li>带宽口径（isa-l 原生）：encode = (k+p)×chunk/时间，decode = (k+e)×chunk/时间；“有效数据” = encode × k/(k+p)，即每秒编码的用户源数据量。</li>
+    <li>带宽口径：<b>除第 4 节 decode 外，本报告的吞吐均为“有效数据”</b>，即每秒编码的用户源数据量 = isa-l 原生 encode 带宽 × k/(k+p)。isa-l 原生口径为 encode = (k+p)×chunk/时间、decode = (k+e)×chunk/时间，原始值见结果文件和第 1 节表格。</li>
     <li>单核测试绑定 CPU 2，测试时同一物理核的 SMT 兄弟线程空闲。“DRAM”单核测试用 64 MB chunk（工作集约 1 GB，远大于各机 L3）。</li>
     <li>多核测试：从 1 个物理核到全部物理核，每核起 1 个（EMR/GNR 另测 2 个，第二个在 SMT 兄弟线程上）独立的 8+4 进程，按 CPU 编号顺序先填满 socket 0 的各 NUMA 节点再到 socket 1。cache 负载用默认 chunk（数据在各核缓存内），dram 负载用 16 MB chunk（每进程 256 MB）。encode 计时延长到 8 s，启动 5 s 后采样 3 s：
       <ul>
@@ -82,20 +82,21 @@
 </section>
 
 <section>
-  <h2>1. 不同 k+p 配置（单核，缓存内，encode）</h2>
+  <h2>1. 不同 k+p 配置（单核，缓存内，有效数据）</h2>
   <div id="c-kp"></div>
   <table id="t-kp"></table>
+  <p class="note">p 相同时，k 越大有效数据吞吐基本不变甚至略升；编码开销主要由校验块数 p 决定。表中同时列出 isa-l 原生 encode 带宽供对照。</p>
 </section>
 
 <section>
-  <h2>2. chunk 大小影响（单核，8+4，encode）</h2>
+  <h2>2. chunk 大小影响（单核，8+4，有效数据）</h2>
   <div id="c-chunk"></div>
   <table id="t-chunk"></table>
   <p class="note">每次运行使用 16 个 chunk 大小的缓冲区（8 源 + 4 校验 + 4 decode 输出）。EMR/GNR 的 L2 为 2 MB/核，256 KB chunk 时工作集约 4 MB，超出 L2 后吞吐降到约 50%–55%；SRF/CWF 的 L2 为 4 MB（本测试中单核独占模块 L2），下降平缓得多。</p>
 </section>
 
 <section>
-  <h2>3. 缓存内 vs DRAM（单核，encode，DRAM 用 64 MB chunk）</h2>
+  <h2>3. 缓存内 vs DRAM（单核，有效数据，DRAM 用 64 MB chunk）</h2>
   <div id="c-dram"></div>
   <table id="t-dram"></table>
   <p class="note">数据在内存里时，单核吞吐取决于单核能同时挂起多少内存请求，不再取决于算力：CWF 单核反而最高，P-core 的优势基本消失。</p>
@@ -108,19 +109,19 @@
 </section>
 
 <section>
-  <h2>5. 指令集路径对比（单核，强制指定实现，8+4 缓存内）</h2>
+  <h2>5. 指令集路径对比（单核，强制指定实现，8+4 缓存内，有效数据）</h2>
   <div id="c-isa"></div>
   <table id="t-isa"></table>
-  <p class="note">mhz、ipc 由 <code>perf stat</code> 在整个进程运行期间测得。“每周期字节”= encode ÷ 频率，表示每个时钟周期处理多少字节，排除了频率差异。SRF/CWF 不支持 AVX-512。</p>
+  <p class="note">mhz、ipc 由 <code>perf stat</code> 在整个进程运行期间测得。“每周期字节”= 有效数据 ÷ 频率，表示每个时钟周期编码多少字节源数据，排除了频率差异。SRF/CWF 不支持 AVX-512。</p>
 </section>
 
 <section>
-  <h2>6. SIMD vs 纯 C 标量（单核，10+4，缓存内）</h2>
+  <h2>6. SIMD vs 纯 C 标量（单核，10+4，缓存内，有效数据）</h2>
   <table id="t-base"></table>
 </section>
 
 <section>
-  <h2>7. 多核扩展：数据在缓存内（纯计算）</h2>
+  <h2>7. 多核扩展：数据在缓存内（纯计算，有效数据）</h2>
   <div id="c-sc-cache"></div>
   <div class="grid2">
     <div><h3>实际平均频率</h3><div id="c-sc-mhz"></div></div>
@@ -144,7 +145,7 @@
 </section>
 
 <section>
-  <h2>9. SMT：同一物理核跑 2 个进程（EMR / GNR）</h2>
+  <h2>9. SMT：同一物理核跑 2 个进程（EMR / GNR，有效数据）</h2>
   <table id="t-smt"></table>
   <p class="note">变化 =（每核 2 进程总吞吐 ÷ 每核 1 进程总吞吐）− 1。单核 DRAM 一行：1 个进程时 256 MB 工作集有一部分命中 L3，2 个进程时 512 MB 基本都走内存，两者不完全可比。</p>
 </section>
@@ -155,8 +156,8 @@
   <h3>10.1 单核：微架构 × 频率 × 指令集</h3>
   <table class="txt" id="t-why1"></table>
   <ul>
-    <li><b>GFNI 是基础</b>：四台机器上，默认的 GFNI 路径都比查表路径（<code>vpshufb</code>）快 2.4–3.1 倍。没有 GFNI 时 AVX-512 比 AVX2 没有优势（EMR 23.8 vs 24.3，GNR 21.4 vs 22.9 GB/s），因为查表指令的吞吐受限于执行端口，加宽向量不增加每周期处理的字节数。</li>
-    <li><b>AVX-512 + GFNI 让 P-core 每周期处理约 18–20 字节</b>，是同机 AVX2 + GFNI（12.1–12.6 字节）的 1.4–1.7 倍，是 CWF E-core（9.5 字节）的约 2 倍、SRF（6.8 字节）的约 3 倍。</li>
+    <li><b>GFNI 是基础</b>：四台机器上，默认的 GFNI 路径都比查表路径（<code>vpshufb</code>）快 2.4–3.1 倍。没有 GFNI 时 AVX-512 比 AVX2 没有优势（有效数据 EMR 15.8 vs 16.2，GNR 14.2 vs 15.2 GB/s），因为查表指令的吞吐受限于执行端口，加宽向量不增加每周期处理的字节数。</li>
+    <li><b>AVX-512 + GFNI 让 P-core 每周期编码约 12–13 字节源数据</b>，是同机 AVX2 + GFNI（8.1–8.4 字节）的 1.4–1.6 倍，是 CWF E-core（6.3 字节）的约 2 倍、SRF（4.5 字节）的约 3 倍。</li>
     <li><b>GNR 单核比 EMR 低约 25%</b>：一是频率，GNR 跑 AVX-512 + GFNI 时只有 3.09 GHz（同机 AVX2 路径 3.29、不含 GFNI 的 AVX-512 3.59 GHz，都低于标称最高 3.9 GHz），EMR 为 3.79 GHz，差 18%；二是 IPC，同样的指令 GNR 为 3.74、EMR 为 4.09，低约 9%。GNR 的这个频率与活动核数无关（1 核和 128 核都约 3.08 GHz），说明是按指令类型限制的频率档位，不是功耗限制。</li>
     <li><b>CWF 比 SRF 快约 55%</b>：频率 3.19 vs 2.99 GHz（+7%），IPC 2.95 vs 2.09（+41%），两者执行的指令数相同。Darkmont 核加宽了向量执行和读写端口。</li>
   </ul>
@@ -176,7 +177,7 @@
     <li><b>台阶</b>：EMR/GNR/CWF 都开了 SNC，每个 socket 分成多个 NUMA 节点，进程按顺序填满一个节点后才进入下一个节点，所以内存受限曲线呈台阶状，节点数翻倍时带宽才翻倍。</li>
     <li><b>RFO 让 E-core 多 33% 流量</b>：isa-l 默认用普通存储指令写校验块。写入的缓存行不在缓存中时，核要先把它读进来再改写（RFO），读流量 = 源数据 + 校验数据。SRF/CWF 在所有核数下每源字节都约 2.0 字节流量。EMR/GNR 在核数少、带宽宽裕时也约 1.8–1.9，但接近饱和时降到约 1.5，即读流量只剩源数据，说明 P-core 在带宽紧张时省掉了整行写入前的读取（推测是 Intel 服务器 P-core 的 SpecI2M 机制）。同样的内存带宽下，E-core 能编码的源数据因此少 25%。</li>
     <li><b>带宽利用率</b>：CWF 达到理论值的 81%（12 通道 DDR5-6400），EMR 74%，GNR 63%，SRF 59%（单 socket）。GNR 和 SRF 偏低的原因这次没有定位，可以用 Intel MLC 测一下相同读写比例下这两台机器能达到的带宽。</li>
-    <li><b>CWF 4 核反而比 2 核慢</b>：CWF 每 4 个核共享一个 4 MB L2 模块，核 0–3 在同一模块。4 个 256 MB 数据流挤在一个 L2 和一个模块出口上，总吞吐从 36 降到 26 GB/s；8 核（2 个模块）恢复到 48 GB/s。E-core 平台做访存密集型任务时应把进程分散到不同模块。</li>
+    <li><b>CWF 4 核反而比 2 核慢</b>：CWF 每 4 个核共享一个 4 MB L2 模块，核 0–3 在同一模块。4 个 256 MB 数据流挤在一个 L2 和一个模块出口上，有效数据从 24 降到 17.5 GB/s；8 核（2 个模块）恢复到 32 GB/s。E-core 平台做访存密集型任务时应把进程分散到不同模块。</li>
     <li><b>SRF 双 socket 不升反降</b>：见上方环境说明，节点 1 内存被虚拟机占满，socket 1 上的进程只能用节点 0 的内存。</li>
   </ul>
 
@@ -306,6 +307,8 @@ const s6 = (id, wl, tpc) => R(id).s6.filter(r => r.wl === wl && r.tpc === tpc);
 const s6at = (id, wl, tpc, cores) => s6(id, wl, tpc).find(r => r.cores === cores);
 const s6max = (id, wl, tpc) => s6(id, wl, tpc).slice(-1)[0];
 const enc = v => v && v[0];
+// 有效数据 = encode × k/(k+p)
+const data = v => v && v[2];
 
 // KPIs
 document.getElementById("kpis").innerHTML = M.map(m => {
@@ -314,8 +317,8 @@ document.getElementById("kpis").innerHTML = M.map(m => {
   const perSock = m.id === "srfsp" ? dramSock.data : dramSock.data / m.sockets;
   return `<div class="kpi" style="border-color:${m.c}"><div class="t" style="color:${m.c}">${label(m)}</div>
     <div class="l">${m.core}</div>
-    <div class="l">单核 8+4 缓存内 / DRAM</div><div><b>${f1(enc(r.s1["8+4"]))}</b> / <b>${f1(enc(r.s3["8+4"]))}</b> GB/s</div>
-    <div class="l">整机缓存内 encode（${full.cores} 核）</div><div><b>${(full.enc / 1e6).toFixed(2)}</b> TB/s</div>
+    <div class="l">单核 8+4 有效数据，缓存内 / DRAM</div><div><b>${f1(data(r.s1["8+4"]))}</b> / <b>${f1(data(r.s3["8+4"]))}</b> GB/s</div>
+    <div class="l">整机缓存内有效数据（${full.cores} 核）</div><div><b>${(full.data / 1e6).toFixed(2)}</b> TB/s</div>
     <div class="l">每 socket 内存受限有效数据</div><div><b>${f0(perSock / 1000)}</b> GB/s</div></div>`;
 }).join("");
 
@@ -327,21 +330,21 @@ table("t-env", [""].concat(M.map(label)), envRows.map(([k, f]) => [k].concat(M.m
 
 // 1. k+p
 const kps = Object.keys(R("srfsp").s1);
-bars("c-kp", kps, M.map(m => ({n:label(m), c:m.c, v:kps.map(k => enc(R(m.id).s1[k]))})), "GB/s");
-table("t-kp", ["k+p"].concat(M.flatMap(m => [`${m.tag} encode`, "有效数据"])),
-  kps.map(k => [k].concat(M.flatMap(m => { const v = R(m.id).s1[k]; return [f1(v[0]), f1(v[2])]; }))));
+bars("c-kp", kps, M.map(m => ({n:label(m), c:m.c, v:kps.map(k => data(R(m.id).s1[k]))})), "有效数据 GB/s");
+table("t-kp", ["k+p"].concat(M.flatMap(m => [`${m.tag} 有效数据`, "encode"])),
+  kps.map(k => [k].concat(M.flatMap(m => { const v = R(m.id).s1[k]; return [f1(v[2]), f1(v[0])]; }))));
 
 // 2. chunk
 const chunks = Object.keys(R("srfsp").s2);
-bars("c-chunk", chunks, M.map(m => ({n:label(m), c:m.c, v:chunks.map(k => enc(R(m.id).s2[k]))})), "GB/s");
-table("t-chunk", ["chunk"].concat(M.map(m => `${m.tag} encode (GB/s)`), M.map(m => `${m.tag} 相对 4K`)),
-  chunks.map(k => [k].concat(M.map(m => f1(enc(R(m.id).s2[k]))), M.map(m => (enc(R(m.id).s2[k]) / enc(R(m.id).s2["4K"]) * 100).toFixed(0) + "%"))));
+bars("c-chunk", chunks, M.map(m => ({n:label(m), c:m.c, v:chunks.map(k => data(R(m.id).s2[k]))})), "有效数据 GB/s");
+table("t-chunk", ["chunk"].concat(M.map(m => `${m.tag} 有效数据 (GB/s)`), M.map(m => `${m.tag} 相对 4K`)),
+  chunks.map(k => [k].concat(M.map(m => f1(data(R(m.id).s2[k]))), M.map(m => (data(R(m.id).s2[k]) / data(R(m.id).s2["4K"]) * 100).toFixed(0) + "%"))));
 
 // 3. cache vs DRAM
 const dkps = Object.keys(R("srfsp").s3);
-bars("c-dram", dkps, M.map(m => ({n:`${label(m)} DRAM`, c:m.c, v:dkps.map(k => enc(R(m.id).s3[k]))})), "GB/s");
+bars("c-dram", dkps, M.map(m => ({n:`${label(m)} DRAM`, c:m.c, v:dkps.map(k => data(R(m.id).s3[k]))})), "有效数据 GB/s");
 table("t-dram", ["k+p"].concat(M.flatMap(m => [`${m.tag} 缓存内`, "DRAM", "下降"])),
-  dkps.map(k => [k].concat(M.flatMap(m => { const c = enc(R(m.id).s1[k]), d = enc(R(m.id).s3[k]); return [f1(c), f1(d), pct(d / c - 1)]; }))));
+  dkps.map(k => [k].concat(M.flatMap(m => { const c = data(R(m.id).s1[k]), d = data(R(m.id).s3[k]); return [f1(c), f1(d), pct(d / c - 1)]; }))));
 
 // 4. erasures
 const es = Object.keys(R("srfsp").s4);
@@ -350,30 +353,30 @@ bars("c-err", es.map(e => `e=${e}`), M.map(m => ({n:`${label(m)} decode`, c:m.c,
 // 5. ISA paths
 const isas = ["avx2", "avx2_gfni", "avx512", "avx512_gfni"];
 const isa = (m, i, key = "8+4") => (R(m.id).s7[i] || {})[key];
-bars("c-isa", isas, M.map(m => ({n:label(m), c:m.c, v:isas.map(i => enc(isa(m, i)))})), "encode GB/s");
-table("t-isa", ["实现"].concat(M.flatMap(m => [`${m.tag} GB/s`, "MHz", "IPC", "每周期字节"])),
+bars("c-isa", isas, M.map(m => ({n:label(m), c:m.c, v:isas.map(i => data(isa(m, i)))})), "有效数据 GB/s");
+table("t-isa", ["实现"].concat(M.flatMap(m => [`${m.tag} 有效数据 GB/s`, "MHz", "IPC", "每周期字节"])),
   isas.map(i => [`<code>${i}</code>`].concat(M.flatMap(m => {
     const v = isa(m, i);
-    return v ? [f1(v[0]), f0(v[3]), v[4].toFixed(2), (v[0] / v[3]).toFixed(1)] : ["–", "–", "–", "–"];
+    return v ? [f1(v[2]), f0(v[3]), v[4].toFixed(2), (v[2] / v[3]).toFixed(1)] : ["–", "–", "–", "–"];
   }))));
 
 // 6. scalar
-table("t-base", ["平台", "纯 C encode (MB/s)", "默认 SIMD 路径 10+4 encode (MB/s)", "加速比"],
-  M.map(m => { const b = R(m.id).s5.encode, s = enc(R(m.id).s1["10+4"]); return [label(m), f0(b), f0(s), (s / b).toFixed(0) + "×"]; }));
+table("t-base", ["平台", "纯 C 有效数据 (MB/s)", "默认 SIMD 路径有效数据 (MB/s)", "加速比"],
+  M.map(m => { const b = R(m.id).s5.encode * 10 / 14, s = data(R(m.id).s1["10+4"]); return [label(m), f0(b), f0(s), (s / b).toFixed(0) + "×"]; }));
 
 // 7. scaling, cache
 const ticks = [1, 2, 4, 8, 16, 28, 36, 56, 96, 128, 288];
 const sser = (wl, key, f = r => r[key]) => M.flatMap(m => (m.smt ? [1, 2] : [1]).map(t => ({
   n: `${m.tag}${m.smt ? (t === 1 ? " 每核 1 进程" : " 每核 2 进程") : ""}`, c:m.c, dash:t === 2,
   pts: s6(m.id, wl, t).map(r => [r.cores, f(r)])})));
-lines("c-sc-cache", sser("cache", "enc", r => r.enc / 1000), {xmax:300, xticks:ticks, ylabel:"encode 总带宽 GB/s", h:380});
+lines("c-sc-cache", sser("cache", "data", r => r.data / 1000), {xmax:300, xticks:ticks, ylabel:"有效数据 GB/s", h:380});
 lines("c-sc-mhz", sser("cache", "mhz"), {xmax:300, xticks:[1, 4, 16, 64, 288], ymin:2000, ymax:4000, ylabel:"MHz", w:560, h:320});
 lines("c-sc-pwr", sser("cache", "pkgw"), {xmax:300, xticks:[1, 4, 16, 64, 288], ylabel:"W", w:560, h:320});
-table("t-sc-cache", ["平台", "核数", "进程/核", "encode 总带宽 (GB/s)", "有效数据 (GB/s)", "扩展效率", "频率 (MHz)", "相对单核频率", "封装功耗 (W)", "有效数据/功耗 (GB/s/W)"],
+table("t-sc-cache", ["平台", "核数", "进程/核", "有效数据 (GB/s)", "每核有效数据 (GB/s)", "扩展效率", "频率 (MHz)", "相对单核频率", "封装功耗 (W)", "有效数据/功耗 (GB/s/W)"],
   M.flatMap(m => (m.smt ? [1, 2] : [1]).flatMap(t => {
     const rows = s6(m.id, "cache", t), r1 = s6(m.id, "cache", 1)[0];
     return rows.filter((r, i) => i === 0 || i === rows.length - 1 || [16, 28, 32, 36, 56, 64, 96, 128].includes(r.cores)).map(r => [
-      label(m), r.cores, t, f1(r.enc), f1(r.data), (r.enc / (r1.enc * r.cores) * 100).toFixed(0) + "%", f0(r.mhz),
+      label(m), r.cores, t, f1(r.data), f1(r.data / r.cores), (r.data / (r1.data * r.cores) * 100).toFixed(0) + "%", f0(r.mhz),
       (r.mhz / r1.mhz * 100).toFixed(0) + "%", f0(r.pkgw), (r.data / 1000 / r.pkgw).toFixed(2)]);
   })));
 
@@ -394,25 +397,25 @@ const smtRows = [];
 M.filter(m => m.smt).forEach(m => ["cache", "dram"].forEach(wl => s6(m.id, wl, 1).forEach(r1 => {
   const r2 = s6at(m.id, wl, 2, r1.cores);
   if (!r2 || ![1, 16, 28, 32, 56, 64, 112, 128].includes(r1.cores)) return;
-  smtRows.push([label(m), wl === "cache" ? "缓存内" : "DRAM", r1.cores, f1(r1.enc), f1(r2.enc), pct(r2.enc / r1.enc - 1), f0(r1.mhz), f0(r2.mhz)]);
+  smtRows.push([label(m), wl === "cache" ? "缓存内" : "DRAM", r1.cores, f1(r1.data), f1(r2.data), pct(r2.data / r1.data - 1), f0(r1.mhz), f0(r2.mhz)]);
 })));
-table("t-smt", ["平台", "负载", "物理核数", "每核 1 进程 encode (GB/s)", "每核 2 进程 encode (GB/s)", "变化", "频率 1 进程/核", "频率 2 进程/核"], smtRows);
+table("t-smt", ["平台", "负载", "物理核数", "每核 1 进程有效数据 (GB/s)", "每核 2 进程有效数据 (GB/s)", "变化", "频率 1 进程/核", "频率 2 进程/核"], smtRows);
 
 // 10. analysis tables
 table("t-why1", ["", ...M.map(label)], [
   ["默认路径", ...M.map(m => m.smt ? "avx512_gfni" : "avx2_gfni")],
-  ["8+4 encode (GB/s)", ...M.map(m => { const i = m.smt ? "avx512_gfni" : "avx2_gfni"; return f1(isa(m, i)[0]); })],
+  ["8+4 有效数据 (GB/s)", ...M.map(m => { const i = m.smt ? "avx512_gfni" : "avx2_gfni"; return f1(isa(m, i)[2]); })],
   ["实际频率 (MHz)", ...M.map(m => { const i = m.smt ? "avx512_gfni" : "avx2_gfni"; return f0(isa(m, i)[3]); })],
   ["IPC", ...M.map(m => { const i = m.smt ? "avx512_gfni" : "avx2_gfni"; return isa(m, i)[4].toFixed(2); })],
-  ["每周期字节", ...M.map(m => { const i = m.smt ? "avx512_gfni" : "avx2_gfni"; const v = isa(m, i); return (v[0] / v[3]).toFixed(1); })],
-  ["avx2_gfni 每周期字节", ...M.map(m => { const v = isa(m, "avx2_gfni"); return (v[0] / v[3]).toFixed(1); })],
+  ["每周期字节（源数据）", ...M.map(m => { const i = m.smt ? "avx512_gfni" : "avx2_gfni"; const v = isa(m, i); return (v[2] / v[3]).toFixed(1); })],
+  ["avx2_gfni 每周期字节", ...M.map(m => { const v = isa(m, "avx2_gfni"); return (v[2] / v[3]).toFixed(1); })],
   ["GFNI 相对查表路径", ...M.map(m => { const i = m.smt ? "avx512_gfni" : "avx2_gfni"; return (isa(m, i)[0] / isa(m, "avx2")[0]).toFixed(1) + "×"; })]]);
 table("t-why2", ["", ...M.map(label)], [
   ["满载核数", ...M.map(m => s6max(m.id, "cache", 1).cores)],
   ["单核 → 满载频率 (MHz)", ...M.map(m => `${f0(s6(m.id, "cache", 1)[0].mhz)} → ${f0(s6max(m.id, "cache", 1).mhz)}`)],
   ["满载封装功耗 / PL1", ...M.map(m => `${f0(s6max(m.id, "cache", 1).pkgw)} W / ${m.pl1}`)],
-  ["扩展效率", ...M.map(m => { const r1 = s6(m.id, "cache", 1)[0], r = s6max(m.id, "cache", 1); return (r.enc / (r1.enc * r.cores) * 100).toFixed(0) + "%"; })],
-  ["满载 encode 总带宽 (TB/s)", ...M.map(m => (s6max(m.id, "cache", 1).enc / 1e6).toFixed(2))]]);
+  ["扩展效率", ...M.map(m => { const r1 = s6(m.id, "cache", 1)[0], r = s6max(m.id, "cache", 1); return (r.data / (r1.data * r.cores) * 100).toFixed(0) + "%"; })],
+  ["满载有效数据 (TB/s)", ...M.map(m => (s6max(m.id, "cache", 1).data / 1e6).toFixed(2))]]);
 </script>
 </body>
 </html>
