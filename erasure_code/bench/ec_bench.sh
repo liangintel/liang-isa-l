@@ -243,24 +243,38 @@ for isa in $ISAS; do
 done
 fi
 
-# [8] 1 个线程 vs 2 个线程（10+4）：按“虚拟 CPU”对比 P-core 超线程和 E-core
-#   1t     : CPU 上 1 个进程
-#   smt    : CPU 和它的 SMT 兄弟线程各 1 个（同一物理核，仅有 SMT 时）
-#   2c_l2  : CPU 和共享同一 L2 模块的另一个物理核（E-core 每 4 核共享 L2 时）
-#   2c     : CPU 和不共享 L2 的另一个物理核
+# [8] 按虚拟 CPU（vCPU）扩展（10+4）：在 1~4 个 vCPU 上各跑 1 个进程，有效数据相加
+#   v1..v4 : 按云上分配 vCPU 的方式取 CPU：有 SMT 时先用满一个物理核的两个超线程再换下一个核；
+#            没有 SMT（E-core）时每个 vCPU 是一个物理核，且取不共享 L2 的核
+#   2c_l2  : 参考，CPU 和共享同一 L2 模块的另一个物理核（E-core 每 4 核共享 L2 时）
+#   2c     : 参考，有 SMT 时 2 个物理核各 1 个线程（兄弟线程空闲）
 #   cache 用默认 chunk（数据在缓存内），dram 用 64M chunk（每进程工作集约 1GB）
 if want 8; then
-echo "--- [8] 10+4, 1 thread vs 2 threads: same physical core (SMT) / 2 cores sharing L2 / 2 separate cores ---"
-sib=$(cpu_expand "$(cat /sys/devices/system/cpu/cpu$CPU/topology/thread_siblings_list)" | grep -vx "$CPU" | head -1)
-l2=$(cpu_expand "$(cat /sys/devices/system/cpu/cpu$CPU/cache/index2/shared_cpu_list)")
-l2mate=$(for c in "${PHYS[@]}"; do grep -qx "$c" <<< "$l2" && [[ $c != "$CPU" ]] && echo "$c"; done | tail -1)
-other=$(for c in "${PHYS[@]}"; do ((c > CPU)) && ! grep -qx "$c" <<< "$l2" && echo "$c"; done | head -1)
+echo "--- [8] 10+4 per vCPU: v1..v4 = 1..4 vCPUs (SMT siblings first, otherwise cores in separate L2 domains); 2c_l2 / 2c references ---"
+siblings() { cpu_expand "$(cat /sys/devices/system/cpu/cpu$1/topology/thread_siblings_list)" | grep -vx "$1"; }
+l2of() { cpu_expand "$(cat /sys/devices/system/cpu/cpu$1/cache/index2/shared_cpu_list)"; }
+# 从 CPU 开始依次取不与已选核共享 L2 的物理核
+cores=("$CPU") used=$(l2of "$CPU")
+for c in "${PHYS[@]}"; do
+	((${#cores[@]} >= 4)) && break
+	((c > CPU)) && ! grep -qx "$c" <<< "$used" && { cores+=("$c"); used+=$'\n'$(l2of "$c"); }
+done
+vlist=()
+for c in "${cores[@]}"; do
+	vlist+=("$c")
+	s=$(siblings "$c" | head -1)
+	[[ -n $s ]] && vlist+=("$s")
+done
+l2mate=$(for c in "${PHYS[@]}"; do l2of "$CPU" | grep -qx "$c" && [[ $c != "$CPU" ]] && echo "$c"; done | tail -1)
+sib=$(siblings "$CPU" | head -1)
 for wl in cache dram; do
 	[[ $wl == dram ]] && sz="-s 64M" || sz=""
-	printf "cfg=%-6s cpus=%-8s wl=%-5s " 1t "$CPU" $wl; pair_point "$CPU" -k 10 -p 4 -e 4 $sz
-	[[ -n $sib ]] && { printf "cfg=%-6s cpus=%-8s wl=%-5s " smt "$CPU,$sib" $wl; pair_point "$CPU,$sib" -k 10 -p 4 -e 4 $sz; }
-	[[ -n $l2mate ]] && { printf "cfg=%-6s cpus=%-8s wl=%-5s " 2c_l2 "$CPU,$l2mate" $wl; pair_point "$CPU,$l2mate" -k 10 -p 4 -e 4 $sz; }
-	[[ -n $other ]] && { printf "cfg=%-6s cpus=%-8s wl=%-5s " 2c "$CPU,$other" $wl; pair_point "$CPU,$other" -k 10 -p 4 -e 4 $sz; }
+	for n in 1 2 3 4; do
+		list=$(IFS=,; echo "${vlist[*]:0:n}")
+		printf "cfg=%-6s cpus=%-12s wl=%-5s " v$n "$list" $wl; pair_point "$list" -k 10 -p 4 -e 4 $sz
+	done
+	[[ -n $l2mate ]] && { printf "cfg=%-6s cpus=%-12s wl=%-5s " 2c_l2 "$CPU,$l2mate" $wl; pair_point "$CPU,$l2mate" -k 10 -p 4 -e 4 $sz; }
+	[[ -n $sib ]] && { printf "cfg=%-6s cpus=%-12s wl=%-5s " 2c "$CPU,${cores[1]}" $wl; pair_point "$CPU,${cores[1]}" -k 10 -p 4 -e 4 $sz; }
 done
 fi
 } 2>&1 | tee "$OUT"
