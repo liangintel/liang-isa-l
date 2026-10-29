@@ -69,7 +69,7 @@
   <ul class="note">
     <li>All data was produced by the same script <code>erasure_code/bench/ec_bench.sh</code>. Raw results are in <code>erasure_code/bench/results/{srfsp,cwf,emr06,gnrsp}.txt</code>; this page embeds them via <code>gen_report_data.py</code>.</li>
     <li>Throughput metric: <b>except for the decode results in section 4, all throughput in this report is "effective data"</b>, i.e. user source data encoded per second = isa-l's native encode bandwidth × k/(k+p). isa-l natively reports encode = (k+p)×chunk/time and decode = (k+e)×chunk/time; raw values are in the result files and the section 1 table.</li>
-    <li>Single-core tests are pinned to CPU 2 with its SMT sibling idle. The single-core "DRAM" tests use a 64 MB chunk (about 1 GB working set, far larger than any L3 here).</li>
+    <li>Single-core tests are pinned to CPU 2 with its SMT sibling idle. "Data in cache" uses the erasure_code_perf default chunk = 128 KB ÷ (k+p), rounded down to 64 B, e.g. <b>10,880 B for 8+4 and 9,344 B for 10+4</b>. "Data in memory" uses a <b>64 MB chunk</b> in single-core tests (about 1 GB working set, far larger than any L3 here) and a <b>16 MB chunk</b> in multi-core tests. Each section title states the k+p and chunk used.</li>
     <li>Multi-core tests: from 1 physical core up to all of them, one independent 8+4 process per core (EMR/GNR also with 2 per core, the second on the SMT sibling), filling the NUMA nodes of socket 0 in CPU-number order before socket 1. The cache workload uses the default chunk (data stays in each core's cache), the dram workload a 16 MB chunk (256 MB per process). The encode benchmark is extended to 8 s and sampled for 3 s starting 5 s after launch:
       <ul>
         <li>How frequency, memory bandwidth and power are measured is described in the table below.</li>
@@ -123,7 +123,7 @@
 </section>
 
 <section>
-  <h2>1. k+p configurations (single core, cache-resident, effective data)</h2>
+  <h2>1. k+p configurations (single core, cache-resident, chunk = 128 KB ÷ (k+p), effective data)</h2>
   <div id="c-kp"></div>
   <table id="t-kp"></table>
   <p class="note">For a given p, effective throughput stays flat or rises slightly as k grows: encoding cost is driven mainly by the number of parity blocks p. The table also lists isa-l's native encode bandwidth for reference.</p>
@@ -137,32 +137,32 @@
 </section>
 
 <section>
-  <h2>3. Cache vs DRAM (single core, effective data, DRAM uses a 64 MB chunk)</h2>
+  <h2>3. Cache vs DRAM (single core, effective data; cache chunk = 128 KB ÷ (k+p), DRAM chunk = 64 MB)</h2>
   <div id="c-dram"></div>
   <table id="t-dram"></table>
   <p class="note">With data in memory, single-core throughput depends on how many memory requests one core can keep in flight rather than on compute: CWF is the fastest single core here and the P-core advantage largely disappears.</p>
 </section>
 
 <section>
-  <h2>4. Number of lost blocks vs decode (single core, 8+4, cache-resident)</h2>
+  <h2>4. Number of lost blocks vs decode (single core, 8+4, cache-resident, chunk 10,880 B)</h2>
   <div id="c-err"></div>
   <p class="note">Decode work is proportional to the number of lost blocks e, but bandwidth is counted as (k+e), so the reported value rises as e falls.</p>
 </section>
 
 <section>
-  <h2>5. ISA paths (single core, implementation forced, 8+4 cache-resident, effective data)</h2>
+  <h2>5. ISA paths (single core, implementation forced, 8+4, cache-resident, chunk 10,880 B, effective data)</h2>
   <div id="c-isa"></div>
   <table id="t-isa"></table>
   <p class="note">MHz and IPC are measured with <code>perf stat</code> over the whole process. "Bytes per cycle" = effective data ÷ frequency, i.e. source bytes encoded per clock cycle with frequency differences removed. SRF/CWF do not support AVX-512.</p>
 </section>
 
 <section>
-  <h2>6. SIMD vs plain C (single core, 10+4, cache-resident, effective data)</h2>
+  <h2>6. SIMD vs plain C (single core, 10+4, cache-resident, chunk 9,344 B, effective data)</h2>
   <table id="t-base"></table>
 </section>
 
 <section>
-  <h2>7. Multi-core scaling: data in cache (pure compute, effective data)</h2>
+  <h2>7. Multi-core scaling: data in cache (8+4, chunk 10,880 B per process, pure compute, effective data)</h2>
   <div id="c-sc-cache"></div>
   <div class="grid2">
     <div><h3>Actual average frequency</h3><div id="c-sc-mhz"></div></div>
@@ -173,7 +173,7 @@
 </section>
 
 <section>
-  <h2>8. Multi-core scaling: data in memory</h2>
+  <h2>8. Multi-core scaling: data in memory (8+4, chunk 16 MB per process, 256 MB working set)</h2>
   <div class="grid2">
     <div><h3>Effective throughput (source data only)</h3><div id="c-sd-data"></div></div>
     <div><h3>Measured memory bandwidth (read + write)</h3><div id="c-sd-bw"></div></div>
@@ -186,7 +186,7 @@
 </section>
 
 <section>
-  <h2>9. SMT: 2 processes on one physical core (EMR / GNR, effective data)</h2>
+  <h2>9. SMT: 2 processes on one physical core (EMR / GNR, 8+4, effective data)</h2>
   <table id="t-smt"></table>
   <p class="note">Change = (total throughput with 2 processes per core ÷ with 1 process per core) − 1. The single-core DRAM row is not fully comparable: with 1 process part of the 256 MB working set hits L3, with 2 processes (512 MB) almost everything goes to memory.</p>
 </section>
@@ -240,7 +240,7 @@
 <section id="cwf-freq">
   <h2>11. CWF per-core sweep: throughput, frequency, power and temperature from 1 to 288 cores</h2>
   <p class="note">
-    Script <code>erasure_code/bench/freq_sweep.sh</code>, results <code>results/cwf_freq_*.txt</code> and <code>results/cwf_hold.txt</code>. Each point runs one 8+4 process (cache-resident) on each of the first n physical cores, with a 4 s encode benchmark sampled from 1.5 s to 3.5 s: frequency (perf cycles), package power and hottest package temperature (turbostat), the package thermal status register IA32_PACKAGE_THERM_STATUS (T = temperature limit reached, L = power limit active) and package thermal throttle events (see <a href="#measure">measurement methods</a>).
+    Script <code>erasure_code/bench/freq_sweep.sh</code>, results <code>results/cwf_freq_*.txt</code> and <code>results/cwf_hold.txt</code>. Each point runs one 8+4 process (cache-resident, chunk 10,880 B) on each of the first n physical cores, with a 4 s encode benchmark sampled from 1.5 s to 3.5 s: frequency (perf cycles), package power and hottest package temperature (turbostat), the package thermal status register IA32_PACKAGE_THERM_STATUS (T = temperature limit reached, L = power limit active) and package thermal throttle events (see <a href="#measure">measurement methods</a>).
     The main sweep adds cores in CPU-number order (packed). All 288 points ran back to back in about 35 minutes with only 1 s between points, so the chip and heatsink progressively heat-soaked. Additional runs compare spread placement, different instruction types, a sustained 60 s full load and a cold start (90 s idle before each point).
   </p>
   <div id="c-cf-data"></div>
@@ -285,8 +285,8 @@
     One 10+4 process runs on each vCPU and the effective data is summed. The cache-resident case uses the default chunk, the DRAM case a 64 MB chunk (about 1 GB per process). Each case is the best of 3 runs (section 8 of the script).
   </p>
   <div class="grid2">
-    <div><h3>Data in cache</h3><div id="c-vc-cache"></div></div>
-    <div><h3>Data in memory</h3><div id="c-vc-dram"></div></div>
+    <div><h3>Data in cache (10+4, chunk 9,344 B)</h3><div id="c-vc-cache"></div></div>
+    <div><h3>Data in memory (10+4, chunk 64 MB)</h3><div id="c-vc-dram"></div></div>
   </div>
   <table id="t-vc"></table>
   <h3>CPUs used and reference configurations</h3>
@@ -414,6 +414,8 @@ const s6max = (id, wl, tpc) => s6(id, wl, tpc).slice(-1)[0];
 const enc = v => v && v[0];
 // effective data = encode × k/(k+p)
 const data = v => v && v[2];
+// erasure_code_perf default chunk: 128 KB ÷ (k+p), rounded down to 64 B
+const defChunk = kp => { const [k, p] = kp.split("+").map(Number); return Math.floor(131072 / (k + p) / 64) * 64; };
 
 // KPIs
 document.getElementById("kpis").innerHTML = M.map(m => {
@@ -422,7 +424,7 @@ document.getElementById("kpis").innerHTML = M.map(m => {
   const perSock = m.id === "srfsp" ? dramSock.data : dramSock.data / m.sockets;
   return `<div class="kpi" style="border-color:${m.c}"><div class="t" style="color:${m.c}">${label(m)}</div>
     <div class="l">${m.core}</div>
-    <div class="l">Single core 8+4, cache / DRAM</div><div><b>${f1(data(r.s1["8+4"]))}</b> / <b>${f1(data(r.s3["8+4"]))}</b> GB/s</div>
+    <div class="l">Single core 8+4, cache (10,880 B chunk) / DRAM (64 MB chunk)</div><div><b>${f1(data(r.s1["8+4"]))}</b> / <b>${f1(data(r.s3["8+4"]))}</b> GB/s</div>
     <div class="l">Whole machine, cache-resident (${full.cores} cores)</div><div><b>${(full.data / 1e6).toFixed(2)}</b> TB/s</div>
     <div class="l">Per socket, memory bound</div><div><b>${f0(perSock / 1000)}</b> GB/s</div></div>`;
 }).join("");
@@ -436,8 +438,8 @@ table("t-env", [""].concat(M.map(label)), envRows.map(([k, f]) => [k].concat(M.m
 // 1. k+p
 const kps = Object.keys(R("srfsp").s1);
 bars("c-kp", kps, M.map(m => ({n:label(m), c:m.c, v:kps.map(k => data(R(m.id).s1[k]))})), "Effective data GB/s");
-table("t-kp", ["k+p"].concat(M.flatMap(m => [`${m.tag} effective`, "encode"])),
-  kps.map(k => [k].concat(M.flatMap(m => { const v = R(m.id).s1[k]; return [f1(v[2]), f1(v[0])]; }))));
+table("t-kp", ["k+p", "chunk (B)"].concat(M.flatMap(m => [`${m.tag} effective`, "encode"])),
+  kps.map(k => [k, defChunk(k).toLocaleString("en-US")].concat(M.flatMap(m => { const v = R(m.id).s1[k]; return [f1(v[2]), f1(v[0])]; }))));
 
 // 2. chunk
 const chunks = Object.keys(R("srfsp").s2);
@@ -447,9 +449,9 @@ table("t-chunk", ["Chunk"].concat(M.map(m => `${m.tag} effective (GB/s)`), M.map
 
 // 3. cache vs DRAM
 const dkps = Object.keys(R("srfsp").s3);
-bars("c-dram", dkps, M.map(m => ({n:`${label(m)} DRAM`, c:m.c, v:dkps.map(k => data(R(m.id).s3[k]))})), "Effective data GB/s");
-table("t-dram", ["k+p"].concat(M.flatMap(m => [`${m.tag} cache`, "DRAM", "Change"])),
-  dkps.map(k => [k].concat(M.flatMap(m => { const c = data(R(m.id).s1[k]), d = data(R(m.id).s3[k]); return [f1(c), f1(d), pct(d / c - 1)]; }))));
+bars("c-dram", dkps, M.map(m => ({n:`${label(m)} DRAM (64 MB chunk)`, c:m.c, v:dkps.map(k => data(R(m.id).s3[k]))})), "Effective data GB/s");
+table("t-dram", ["k+p", "Cache chunk (B)"].concat(M.flatMap(m => [`${m.tag} cache`, "DRAM (64 MB)", "Change"])),
+  dkps.map(k => [k, defChunk(k).toLocaleString("en-US")].concat(M.flatMap(m => { const c = data(R(m.id).s1[k]), d = data(R(m.id).s3[k]); return [f1(c), f1(d), pct(d / c - 1)]; }))));
 
 // 4. erasures
 const es = Object.keys(R("srfsp").s4);
@@ -502,7 +504,7 @@ const smtRows = [];
 M.filter(m => m.smt).forEach(m => ["cache", "dram"].forEach(wl => s6(m.id, wl, 1).forEach(r1 => {
   const r2 = s6at(m.id, wl, 2, r1.cores);
   if (!r2 || ![1, 16, 28, 32, 56, 64, 112, 128].includes(r1.cores)) return;
-  smtRows.push([label(m), wl === "cache" ? "Cache" : "DRAM", r1.cores, f1(r1.data), f1(r2.data), pct(r2.data / r1.data - 1), f0(r1.mhz), f0(r2.mhz)]);
+  smtRows.push([label(m), wl === "cache" ? "Cache (chunk 10,880 B)" : "DRAM (chunk 16 MB)", r1.cores, f1(r1.data), f1(r2.data), pct(r2.data / r1.data - 1), f0(r1.mhz), f0(r2.mhz)]);
 })));
 table("t-smt", ["Platform", "Workload", "Physical cores", "1 proc/core effective (GB/s)", "2 procs/core effective (GB/s)", "Change", "Freq 1 proc/core", "Freq 2 procs/core"], smtRows);
 
@@ -565,11 +567,11 @@ const NV = [1, 2, 3, 4];
   M.map(m => ({n:`${label(m)} (${m.smt ? "P-core hyper-threads" : "E-core"})`, c:m.c, v:NV.map(n => { const r = s8(m, "v" + n, wl); return r ? r.data : null; })})), "Effective data GB/s"));
 const vd = (tag, n, wl) => { const r = s8(M.find(m => m.tag === tag), "v" + n, wl); return r && r.data; };
 table("t-vc", ["Data in", "vCPUs"].concat(M.map(m => `${m.tag} (GB/s)`), M.map(m => `${m.tag} per vCPU`), ["CWF ÷ EMR", "CWF ÷ GNR"]),
-  ["cache", "dram"].flatMap(wl => NV.map(n => [wl === "cache" ? "Cache" : "Memory", n]
+  ["cache", "dram"].flatMap(wl => NV.map(n => [wl === "cache" ? "Cache (chunk 9,344 B)" : "Memory (chunk 64 MB)", n]
     .concat(M.map(m => f1(vd(m.tag, n, wl))), M.map(m => f1(vd(m.tag, n, wl) / n)),
       [(vd("CWF", n, wl) / vd("EMR", n, wl)).toFixed(2) + "×", (vd("CWF", n, wl) / vd("GNR", n, wl)).toFixed(2) + "×"]))));
 const refName = {"2c_l2":"Reference: 2 cores in the same L2 module", "2c":"Reference: 2 physical cores, 1 thread each (siblings idle)"};
-table("t-vc-cpu", ["Platform", "Configuration", "CPUs", "Cache (GB/s)", "Memory (GB/s)", "Freq (MHz) cache / memory"],
+table("t-vc-cpu", ["Platform", "Configuration", "CPUs", "Cache, chunk 9,344 B (GB/s)", "Memory, chunk 64 MB (GB/s)", "Freq (MHz) cache / memory"],
   M.flatMap(m => [...NV.map(n => "v" + n), "2c_l2", "2c"].map(cfg => {
     const c = s8(m, cfg, "cache"), d = s8(m, cfg, "dram");
     if (!c || !d) return null;

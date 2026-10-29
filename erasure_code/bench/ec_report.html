@@ -69,7 +69,7 @@
   <ul class="note">
     <li>所有数据由同一个脚本 <code>erasure_code/bench/ec_bench.sh</code> 生成，原始结果在 <code>erasure_code/bench/results/{srfsp,cwf,emr06,gnrsp}.txt</code>，本页数据由 <code>gen_report_data.py</code> 从结果文件嵌入。</li>
     <li>带宽口径：<b>除第 4 节 decode 外，本报告的吞吐均为“有效数据”</b>，即每秒编码的用户源数据量 = isa-l 原生 encode 带宽 × k/(k+p)。isa-l 原生口径为 encode = (k+p)×chunk/时间、decode = (k+e)×chunk/时间，原始值见结果文件和第 1 节表格。</li>
-    <li>单核测试绑定 CPU 2，测试时同一物理核的 SMT 兄弟线程空闲。“DRAM”单核测试用 64 MB chunk（工作集约 1 GB，远大于各机 L3）。</li>
+    <li>单核测试绑定 CPU 2，测试时同一物理核的 SMT 兄弟线程空闲。“数据在缓存内”用 erasure_code_perf 的默认 chunk = 128 KB ÷ (k+p) 向下取整到 64 B，例如 <b>8+4 为 10,880 B、10+4 为 9,344 B</b>；“数据在内存里”单核测试用 <b>64 MB chunk</b>（工作集约 1 GB，远大于各机 L3），多核测试用 <b>16 MB chunk</b>。各节标题标出了所用的 k+p 和 chunk。</li>
     <li>多核测试：从 1 个物理核到全部物理核，每核起 1 个（EMR/GNR 另测 2 个，第二个在 SMT 兄弟线程上）独立的 8+4 进程，按 CPU 编号顺序先填满 socket 0 的各 NUMA 节点再到 socket 1。cache 负载用默认 chunk（数据在各核缓存内），dram 负载用 16 MB chunk（每进程 256 MB）。encode 计时延长到 8 s，启动 5 s 后采样 3 s：
       <ul>
         <li>频率、内存带宽、功耗的测量方法见下表。</li>
@@ -123,7 +123,7 @@
 </section>
 
 <section>
-  <h2>1. 不同 k+p 配置（单核，缓存内，有效数据）</h2>
+  <h2>1. 不同 k+p 配置（单核，缓存内，chunk = 128 KB ÷ (k+p)，有效数据）</h2>
   <div id="c-kp"></div>
   <table id="t-kp"></table>
   <p class="note">p 相同时，k 越大有效数据吞吐基本不变甚至略升；编码开销主要由校验块数 p 决定。表中同时列出 isa-l 原生 encode 带宽供对照。</p>
@@ -137,32 +137,32 @@
 </section>
 
 <section>
-  <h2>3. 缓存内 vs DRAM（单核，有效数据，DRAM 用 64 MB chunk）</h2>
+  <h2>3. 缓存内 vs DRAM（单核，有效数据；缓存内 chunk = 128 KB ÷ (k+p)，DRAM chunk = 64 MB）</h2>
   <div id="c-dram"></div>
   <table id="t-dram"></table>
   <p class="note">数据在内存里时，单核吞吐取决于单核能同时挂起多少内存请求，不再取决于算力：CWF 单核反而最高，P-core 的优势基本消失。</p>
 </section>
 
 <section>
-  <h2>4. 丢失块数对 decode 的影响（单核，8+4，缓存内）</h2>
+  <h2>4. 丢失块数对 decode 的影响（单核，8+4，缓存内，chunk 10,880 B）</h2>
   <div id="c-err"></div>
   <p class="note">decode 计算量与丢失块数 e 成正比，但带宽口径为 (k+e)，因此 e 越小数值越高。</p>
 </section>
 
 <section>
-  <h2>5. 指令集路径对比（单核，强制指定实现，8+4 缓存内，有效数据）</h2>
+  <h2>5. 指令集路径对比（单核，强制指定实现，8+4，缓存内，chunk 10,880 B，有效数据）</h2>
   <div id="c-isa"></div>
   <table id="t-isa"></table>
   <p class="note">mhz、ipc 由 <code>perf stat</code> 在整个进程运行期间测得。“每周期字节”= 有效数据 ÷ 频率，表示每个时钟周期编码多少字节源数据，排除了频率差异。SRF/CWF 不支持 AVX-512。</p>
 </section>
 
 <section>
-  <h2>6. SIMD vs 纯 C 标量（单核，10+4，缓存内，有效数据）</h2>
+  <h2>6. SIMD vs 纯 C 标量（单核，10+4，缓存内，chunk 9,344 B，有效数据）</h2>
   <table id="t-base"></table>
 </section>
 
 <section>
-  <h2>7. 多核扩展：数据在缓存内（纯计算，有效数据）</h2>
+  <h2>7. 多核扩展：数据在缓存内（8+4，每进程 chunk 10,880 B，纯计算，有效数据）</h2>
   <div id="c-sc-cache"></div>
   <div class="grid2">
     <div><h3>实际平均频率</h3><div id="c-sc-mhz"></div></div>
@@ -173,7 +173,7 @@
 </section>
 
 <section>
-  <h2>8. 多核扩展：数据在内存里</h2>
+  <h2>8. 多核扩展：数据在内存里（8+4，每进程 chunk 16 MB，工作集 256 MB）</h2>
   <div class="grid2">
     <div><h3>有效数据吞吐（只算源数据）</h3><div id="c-sd-data"></div></div>
     <div><h3>实测内存带宽（读 + 写）</h3><div id="c-sd-bw"></div></div>
@@ -186,7 +186,7 @@
 </section>
 
 <section>
-  <h2>9. SMT：同一物理核跑 2 个进程（EMR / GNR，有效数据）</h2>
+  <h2>9. SMT：同一物理核跑 2 个进程（EMR / GNR，8+4，有效数据）</h2>
   <table id="t-smt"></table>
   <p class="note">变化 =（每核 2 进程总吞吐 ÷ 每核 1 进程总吞吐）− 1。单核 DRAM 一行：1 个进程时 256 MB 工作集有一部分命中 L3，2 个进程时 512 MB 基本都走内存，两者不完全可比。</p>
 </section>
@@ -240,7 +240,7 @@
 <section id="cwf-freq">
   <h2>11. CWF 逐核扫描：1–288 核的吞吐、频率、功耗和温度</h2>
   <p class="note">
-    脚本 <code>erasure_code/bench/freq_sweep.sh</code>，结果 <code>results/cwf_freq_*.txt</code>、<code>results/cwf_hold.txt</code>。每个点在前 n 个物理核上各跑 1 个 8+4 进程（缓存内），encode 计时 4 s，在 1.5–3.5 s 采样：频率（perf cycles）、封装功耗和封装最高温度（turbostat）、封装热状态寄存器 IA32_PACKAGE_THERM_STATUS（T = 达到温度上限，L = 功耗限制生效）以及封装热节流事件数（各指标的测量方法见 <a href="#measure">测试方法</a>）。
+    脚本 <code>erasure_code/bench/freq_sweep.sh</code>，结果 <code>results/cwf_freq_*.txt</code>、<code>results/cwf_hold.txt</code>。每个点在前 n 个物理核上各跑 1 个 8+4 进程（缓存内，chunk 10,880 B），encode 计时 4 s，在 1.5–3.5 s 采样：频率（perf cycles）、封装功耗和封装最高温度（turbostat）、封装热状态寄存器 IA32_PACKAGE_THERM_STATUS（T = 达到温度上限，L = 功耗限制生效）以及封装热节流事件数（各指标的测量方法见 <a href="#measure">测试方法</a>）。
     主扫描按 CPU 编号顺序依次增加核（packed），288 个点连续跑完约 35 分钟，点间只间隔 1 s，芯片和散热器逐渐被“烤热”；另外做了分散绑核（spread）、不同指令类型、持续 60 s 满载和冷启动（每点前空闲 90 s）对比。
   </p>
   <div id="c-cf-data"></div>
@@ -285,8 +285,8 @@
     每个 vCPU 上各跑 1 个 10+4 进程，把有效数据相加。缓存内用默认 chunk，DRAM 用 64 MB chunk（每进程工作集约 1 GB）。每项重复 3 次取最高（脚本第 8 段）。
   </p>
   <div class="grid2">
-    <div><h3>数据在缓存内</h3><div id="c-vc-cache"></div></div>
-    <div><h3>数据在内存里</h3><div id="c-vc-dram"></div></div>
+    <div><h3>数据在缓存内（10+4，chunk 9,344 B）</h3><div id="c-vc-cache"></div></div>
+    <div><h3>数据在内存里（10+4，chunk 64 MB）</h3><div id="c-vc-dram"></div></div>
   </div>
   <table id="t-vc"></table>
   <h3>使用的 CPU 及参考配置</h3>
@@ -414,6 +414,8 @@ const s6max = (id, wl, tpc) => s6(id, wl, tpc).slice(-1)[0];
 const enc = v => v && v[0];
 // 有效数据 = encode × k/(k+p)
 const data = v => v && v[2];
+// erasure_code_perf 默认 chunk：128 KB ÷ (k+p)，向下取整到 64 B
+const defChunk = kp => { const [k, p] = kp.split("+").map(Number); return Math.floor(131072 / (k + p) / 64) * 64; };
 
 // KPIs
 document.getElementById("kpis").innerHTML = M.map(m => {
@@ -422,7 +424,7 @@ document.getElementById("kpis").innerHTML = M.map(m => {
   const perSock = m.id === "srfsp" ? dramSock.data : dramSock.data / m.sockets;
   return `<div class="kpi" style="border-color:${m.c}"><div class="t" style="color:${m.c}">${label(m)}</div>
     <div class="l">${m.core}</div>
-    <div class="l">单核 8+4 有效数据，缓存内 / DRAM</div><div><b>${f1(data(r.s1["8+4"]))}</b> / <b>${f1(data(r.s3["8+4"]))}</b> GB/s</div>
+    <div class="l">单核 8+4 有效数据，缓存内（10,880 B chunk）/ DRAM（64 MB chunk）</div><div><b>${f1(data(r.s1["8+4"]))}</b> / <b>${f1(data(r.s3["8+4"]))}</b> GB/s</div>
     <div class="l">整机缓存内有效数据（${full.cores} 核）</div><div><b>${(full.data / 1e6).toFixed(2)}</b> TB/s</div>
     <div class="l">每 socket 内存受限有效数据</div><div><b>${f0(perSock / 1000)}</b> GB/s</div></div>`;
 }).join("");
@@ -436,8 +438,8 @@ table("t-env", [""].concat(M.map(label)), envRows.map(([k, f]) => [k].concat(M.m
 // 1. k+p
 const kps = Object.keys(R("srfsp").s1);
 bars("c-kp", kps, M.map(m => ({n:label(m), c:m.c, v:kps.map(k => data(R(m.id).s1[k]))})), "有效数据 GB/s");
-table("t-kp", ["k+p"].concat(M.flatMap(m => [`${m.tag} 有效数据`, "encode"])),
-  kps.map(k => [k].concat(M.flatMap(m => { const v = R(m.id).s1[k]; return [f1(v[2]), f1(v[0])]; }))));
+table("t-kp", ["k+p", "chunk (B)"].concat(M.flatMap(m => [`${m.tag} 有效数据`, "encode"])),
+  kps.map(k => [k, defChunk(k).toLocaleString("en-US")].concat(M.flatMap(m => { const v = R(m.id).s1[k]; return [f1(v[2]), f1(v[0])]; }))));
 
 // 2. chunk
 const chunks = Object.keys(R("srfsp").s2);
@@ -447,9 +449,9 @@ table("t-chunk", ["chunk"].concat(M.map(m => `${m.tag} 有效数据 (GB/s)`), M.
 
 // 3. cache vs DRAM
 const dkps = Object.keys(R("srfsp").s3);
-bars("c-dram", dkps, M.map(m => ({n:`${label(m)} DRAM`, c:m.c, v:dkps.map(k => data(R(m.id).s3[k]))})), "有效数据 GB/s");
-table("t-dram", ["k+p"].concat(M.flatMap(m => [`${m.tag} 缓存内`, "DRAM", "下降"])),
-  dkps.map(k => [k].concat(M.flatMap(m => { const c = data(R(m.id).s1[k]), d = data(R(m.id).s3[k]); return [f1(c), f1(d), pct(d / c - 1)]; }))));
+bars("c-dram", dkps, M.map(m => ({n:`${label(m)} DRAM（64 MB chunk）`, c:m.c, v:dkps.map(k => data(R(m.id).s3[k]))})), "有效数据 GB/s");
+table("t-dram", ["k+p", "缓存内 chunk (B)"].concat(M.flatMap(m => [`${m.tag} 缓存内`, "DRAM（64 MB）", "下降"])),
+  dkps.map(k => [k, defChunk(k).toLocaleString("en-US")].concat(M.flatMap(m => { const c = data(R(m.id).s1[k]), d = data(R(m.id).s3[k]); return [f1(c), f1(d), pct(d / c - 1)]; }))));
 
 // 4. erasures
 const es = Object.keys(R("srfsp").s4);
@@ -502,7 +504,7 @@ const smtRows = [];
 M.filter(m => m.smt).forEach(m => ["cache", "dram"].forEach(wl => s6(m.id, wl, 1).forEach(r1 => {
   const r2 = s6at(m.id, wl, 2, r1.cores);
   if (!r2 || ![1, 16, 28, 32, 56, 64, 112, 128].includes(r1.cores)) return;
-  smtRows.push([label(m), wl === "cache" ? "缓存内" : "DRAM", r1.cores, f1(r1.data), f1(r2.data), pct(r2.data / r1.data - 1), f0(r1.mhz), f0(r2.mhz)]);
+  smtRows.push([label(m), wl === "cache" ? "缓存内（chunk 10,880 B）" : "DRAM（chunk 16 MB）", r1.cores, f1(r1.data), f1(r2.data), pct(r2.data / r1.data - 1), f0(r1.mhz), f0(r2.mhz)]);
 })));
 table("t-smt", ["平台", "负载", "物理核数", "每核 1 进程有效数据 (GB/s)", "每核 2 进程有效数据 (GB/s)", "变化", "频率 1 进程/核", "频率 2 进程/核"], smtRows);
 
@@ -565,11 +567,11 @@ const NV = [1, 2, 3, 4];
   M.map(m => ({n:`${label(m)}（${m.smt ? "P-core 超线程" : "E-core"}）`, c:m.c, v:NV.map(n => { const r = s8(m, "v" + n, wl); return r ? r.data : null; })})), "有效数据 GB/s"));
 const vd = (tag, n, wl) => { const r = s8(M.find(m => m.tag === tag), "v" + n, wl); return r && r.data; };
 table("t-vc", ["数据位置", "vCPU 数"].concat(M.map(m => `${m.tag} (GB/s)`), M.map(m => `${m.tag} 每 vCPU`), ["CWF ÷ EMR", "CWF ÷ GNR"]),
-  ["cache", "dram"].flatMap(wl => NV.map(n => [wl === "cache" ? "缓存内" : "内存里", n]
+  ["cache", "dram"].flatMap(wl => NV.map(n => [wl === "cache" ? "缓存内（chunk 9,344 B）" : "内存里（chunk 64 MB）", n]
     .concat(M.map(m => f1(vd(m.tag, n, wl))), M.map(m => f1(vd(m.tag, n, wl) / n)),
       [(vd("CWF", n, wl) / vd("EMR", n, wl)).toFixed(2) + "×", (vd("CWF", n, wl) / vd("GNR", n, wl)).toFixed(2) + "×"]))));
 const refName = {"2c_l2":"参考：同一 L2 模块的 2 个核", "2c":"参考：2 个物理核各 1 个线程（兄弟线程空闲）"};
-table("t-vc-cpu", ["平台", "配置", "CPU 编号", "缓存内 (GB/s)", "内存里 (GB/s)", "频率 (MHz) 缓存内 / 内存里"],
+table("t-vc-cpu", ["平台", "配置", "CPU 编号", "缓存内，chunk 9,344 B (GB/s)", "内存里，chunk 64 MB (GB/s)", "频率 (MHz) 缓存内 / 内存里"],
   M.flatMap(m => [...NV.map(n => "v" + n), "2c_l2", "2c"].map(cfg => {
     const c = s8(m, cfg, "cache"), d = s8(m, cfg, "dram");
     if (!c || !d) return null;
