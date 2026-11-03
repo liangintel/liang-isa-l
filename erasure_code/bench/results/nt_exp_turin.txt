@@ -1,0 +1,16 @@
+# host amd-turin  nt=/tmp/isal_nt/erasure_code_perf
+check: done all: Pass
+base cold6 rep=1 procs=6 pass=6 enc=279974 dec=207245 per_enc=46662
+base cold6 rep=2 procs=6 pass=6 enc=279410 dec=206094 per_enc=46568
+base cold6 rep=3 procs=6 pass=6 enc=279422 dec=207317 per_enc=46570
+base cold6 mem procs=6 pass=6 enc=279555 dec=206022 per_enc=46593 enc_rd=91.6 enc_wr=90.9
+base cold1 procs=1 pass=1 enc=72329 dec=53486 per_enc=72329
+base warm6 procs=6 pass=6 enc=765059 dec=797989 per_enc=127510
+base dram6 procs=6 pass=6 enc=163737 dec=167812 per_enc=27289
+nt cold6 rep=1 procs=6 pass=6 enc=546553 dec=279030 per_enc=91092
+nt cold6 rep=2 procs=6 pass=6 enc=545583 dec=280587 per_enc=90931
+nt cold6 rep=3 procs=6 pass=6 enc=543786 dec=281412 per_enc=90631
+nt cold6 mem procs=6 pass=6 enc=545897 dec=279395 per_enc=90983 enc_rd=0.1 enc_wr=182.3
+nt cold1 procs=1 pass=1 enc=91339 dec=67374 per_enc=91339
+nt warm6 procs=6 pass=6 enc=609734 dec=661822 per_enc=101622
+nt dram6 procs=6 pass=6 enc=178078 dec=180719 per_enc=29680

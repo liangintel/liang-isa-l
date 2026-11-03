@@ -1,0 +1,16 @@
+# host localhost  nt=/tmp/isal_nt/erasure_code_perf
+check: done all: Pass
+base cold6 rep=1 procs=6 pass=6 enc=187959 dec=146270 per_enc=31326
+base cold6 rep=2 procs=6 pass=6 enc=187204 dec=143734 per_enc=31201
+base cold6 rep=3 procs=6 pass=6 enc=187806 dec=143618 per_enc=31301
+base cold6 mem procs=6 pass=6 enc=186998 dec=143478 per_enc=31166 enc_rd=58.5 enc_wr=57.9
+base cold1 procs=1 pass=1 enc=33456 dec=30479 per_enc=33456
+base warm6 procs=6 pass=6 enc=230136 dec=230562 per_enc=38356
+base dram6 procs=6 pass=6 enc=93114 dec=93703 per_enc=15519
+nt cold6 rep=1 procs=6 pass=6 enc=231331 dec=176482 per_enc=38555
+nt cold6 rep=2 procs=6 pass=6 enc=231417 dec=176123 per_enc=38569
+nt cold6 rep=3 procs=6 pass=6 enc=231258 dec=176632 per_enc=38543
+nt cold6 mem procs=6 pass=6 enc=231019 dec=176838 per_enc=38503 enc_rd=0.3 enc_wr=77.3
+nt cold1 procs=1 pass=1 enc=38926 dec=36301 per_enc=38926
+nt warm6 procs=6 pass=6 enc=230830 dec=231013 per_enc=38472
+nt dram6 procs=6 pass=6 enc=110279 dec=111060 per_enc=18380
