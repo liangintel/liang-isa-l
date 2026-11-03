@@ -103,10 +103,10 @@
   <div id="c-main"></div>
   <table id="t-main"></table>
   <p class="note">每项测试运行 3 遍，表中数值取 3 遍里居中的那一遍；“范围”是 3 遍中的最低值到最高值，用来看结果是否稳定。单进程最小/最大是居中那一遍里 6 个进程中最慢和最快的一个。</p>
-  <h3>单进程与 6 进程之和的有效数据对比（<code>--cold</code>）</h3>
+  <h3>6 进程之和与换算到单进程的有效数据（<code>--cold</code>）</h3>
   <div id="c-scale"></div>
   <table id="t-scale"></table>
-  <p class="note">单进程：只在 CPU 1 上跑 1 个进程（测试项 [3]）。“单进程 × 6”是 6 个进程互不影响时的理想值；扩展效率 = 6 进程之和 ÷ 单进程 × 6。</p>
+  <p class="note">单进程 = 6 进程之和 ÷ 6，即 6 个进程同时运行时平均每个进程的有效数据。表中“参考：只跑 1 个进程”是测试项 [3]（机器上只有 CPU 1 在跑）的结果，用来看 6 个进程之间互相影响了多少。</p>
 </section>
 
 <section>
@@ -367,12 +367,11 @@ table("t-main", ["平台", "encode (GB/s)", "范围", "decode (GB/s)", "范围",
   M.map(m => { const r = R(m.id).cold; return [label(m), f1(r.enc), `${f1(r.enc_lo)}–${f1(r.enc_hi)}`, f1(r.dec), `${f1(r.dec_lo)}–${f1(r.dec_hi)}`,
     (r.dec / r.enc).toFixed(2), f1(r.data), `${f1(r.enc_min)}–${f1(r.enc_max)}`, `${f1(r.dec_min)}–${f1(r.dec_max)}`, f0(r.mhz), r.ipc.toFixed(2)]; }));
 bars("c-scale", M.map(label), [
-  {n:"单进程有效数据", c:"#60a5fa", v:M.map(m => R(m.id).cold1.data)},
-  {n:"6 进程之和有效数据", c:"#1e3a8a", v:M.map(m => R(m.id).cold.data)},
-  {n:"单进程 × 6（理想）", c:"#cbd5e1", v:M.map(m => R(m.id).cold1.data * 6)}], "有效数据 GB/s");
-table("t-scale", ["平台", "单进程有效数据 (GB/s)", "6 进程之和有效数据 (GB/s)", "6 进程平均每进程 (GB/s)", "单进程 × 6 (GB/s)", "扩展效率"],
-  M.map(m => { const s = R(m.id).cold1.data, a = R(m.id).cold.data;
-    return [label(m), f1(s), f1(a), f1(a / 6), f1(s * 6), (a / s / 6 * 100).toFixed(0) + "%"]; }));
+  {n:"6 进程之和", c:"#1e3a8a", v:M.map(m => R(m.id).cold.data)},
+  {n:"单进程（6 进程之和 ÷ 6）", c:"#60a5fa", v:M.map(m => R(m.id).cold.data / 6)}], "有效数据 GB/s");
+table("t-scale", ["平台", "6 进程之和 (GB/s)", "单进程 = ÷ 6 (GB/s)", "单进程最慢–最快 (GB/s)", "参考：只跑 1 个进程 (GB/s)", "÷ 6 相对只跑 1 个"],
+  M.map(m => { const r = R(m.id).cold, a = r.data / 6, s = R(m.id).cold1.data, k = 6 / 9;
+    return [label(m), f1(r.data), f1(a), `${f1(r.enc_min * k)}–${f1(r.enc_max * k)}`, f1(s), (a / s * 100).toFixed(0) + "%"]; }));
 
 // 2. per process
 const shades = ["#1e3a8a", "#2563eb", "#60a5fa", "#0f766e", "#14b8a6", "#99f6e4"];
