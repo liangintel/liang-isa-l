@@ -59,7 +59,7 @@
         <li><b>SRF</b>：是计算受限。单进程 cold 与数据在缓存内一样，都是 24.5 GB/s。CPU 41 在 socket 1 上，节点 1 的内存被虚拟机占满，只能用远端内存，这个进程的吞吐减半。</li>
         <li><b>CWF</b>：接近计算上限，cold 达到缓存内的 81%。</li>
         <li><b>EMR / GNR</b>：受单核访存并发限制。P-core 的计算能力是 CWF 的 1.9–2.4 倍，但单进程 cold 只发挥出缓存内的 39%–49%。每核每秒只能完成约 24 GB 的“写 + 写前读入”，与 CWF 的 E-core 相当。同一节点上进程越多越慢。</li>
-        <li><b>Turin</b>：计算最强（缓存内每核 127 GB/s），单核访存吞吐也约是 Intel 核的 2 倍（单进程 cold 72 GB/s）。6 进程时每个 NPS4 节点（只有 3 个内存通道）跑 3 个进程，节点内存带宽用到约 60%，每进程降到 46.5 GB/s。</li>
+        <li><b>Turin</b>：计算最强（缓存内每核 127 GB/s），单核访存吞吐也约是 Intel 核的 2 倍（单进程 cold 72 GB/s）。6 进程时每个 NPS4 节点（NUMA Nodes Per Socket = 4：AMD 的 BIOS 设置，把每个 socket 切成 4 个 NUMA 节点，每个节点 24 核、只有 3 个内存通道）跑 3 个进程，节点内存带宽用到约 60%，每进程降到 46.5 GB/s。</li>
       </ul></li>
   </ul>
 </section>
@@ -72,7 +72,8 @@
     1. <b><code>--cold</code> 的语义</b>：每个缓冲区分配 10 GB ÷ (m+p) = 853 MB，轮流使用其中 1024 段、每段 128 KB。但程序只给源缓冲区的前 128 KB 填了随机数，其余部分从未写过。读未写过的匿名内存会映射到内核共享零页：EMR/CWF 的 THP 为 always，用的是 2 MB 大零页；其他机器为 madvise，用 4 KB 零页。这两种零页都常驻缓存，所以 encode 实际只有“写校验块”在访问内存。decode 用来恢复的 6 块是数据块 0、1、2、4、5（零页）和校验块 8；校验块 8 已在 encode 阶段写满，是真实的内存页。<br>
     2. <b>SRF</b> 的 CPU 41 在 socket 1（NUMA 节点 1），该节点被一个约 250 GB 的 qemu 虚拟机占满，空闲内存约 300 MB。所以这个进程的内存来自节点 0，是跨 socket 访问。<br>
     3. <b>GNR</b> 标称最高 3.9 GHz，HWP 请求也是 3.9 GHz，但本机单核跑标量死循环也只到 3.6 GHz，所以 3.6 GHz 就是这台机器的实际上限。<br>
-    4. <b>NUMA 分布</b>：同一组 CPU 编号在各机器上落在不同的节点上（见下表）。EMR/GNR 的 SNC2 节点 0 上有 4 个进程、节点 1 上有 2 个；Turin 的 NPS4 每个节点 3 个进程；CWF 的 6 个进程都在 SNC3 的节点 0。
+    4. <b>NUMA 分布</b>：同一组 CPU 编号在各机器上落在不同的节点上（见下表）。EMR/GNR 的 SNC2 节点 0 上有 4 个进程、节点 1 上有 2 个；Turin 的 NPS4 每个节点 3 个进程；CWF 的 6 个进程都在 SNC3 的节点 0。<br>
+    <span class="note">注：<b>SNC</b>（Sub-NUMA Clustering，Intel）和 <b>NPS</b>（NUMA Nodes Per Socket，AMD）是同一类 BIOS 设置：把一个 socket 按内存控制器切成几个 NUMA 节点，数字就是每个 socket 切成几份（SNC2 = 2 份，SNC3 = 3 份，NPS4 = 4 份）。操作系统默认从进程所在节点分配内存，访问本节点内存延迟更低，但一个节点只能用到本节点的那几个内存通道。Turin 每 socket 12 个通道，NPS4 下每个节点 3 个通道（153.6 GB/s）、24 核；EMR/GNR 每个 SNC2 节点 4 个通道；CWF 每个 SNC3 节点 4 个通道。</span>
   </div>
   <h3>被测 CPU 的位置（socket / NUMA 节点 / L3 域）</h3>
   <table id="t-place"></table>
@@ -104,7 +105,10 @@
   <table id="t-main"></table>
   <p class="note">每项测试运行 3 遍，表中数值取 3 遍里居中的那一遍；“范围”是 3 遍中的最低值到最高值，用来看结果是否稳定。单进程最小/最大是居中那一遍里 6 个进程中最慢和最快的一个。</p>
   <h3>6 进程之和与换算到单进程的有效数据（<code>--cold</code>）</h3>
-  <div id="c-scale"></div>
+  <div class="grid2">
+    <div><h3>6 进程之和（有效数据）</h3><div id="c-scale-sum"></div></div>
+    <div><h3>换算到单进程（6 进程之和 ÷ 6）</h3><div id="c-scale-one"></div></div>
+  </div>
   <table id="t-scale"></table>
   <p class="note">单进程 = 6 进程之和 ÷ 6，即 6 个进程同时运行时平均每个进程的有效数据。表中“参考：只跑 1 个进程”是测试项 [3]（机器上只有 CPU 1 在跑）的结果，用来看 6 个进程之间互相影响了多少。</p>
 </section>
@@ -200,7 +204,7 @@
         <li>6 进程时，节点 0 上 4 个进程每个 26–27 GB/s，节点 1 上 2 个进程每个 31–33 GB/s。节点利用率只有 35%–40%，但负载越高延迟越长，单核吞吐随之下降。</li>
         <li>GNR 的频率比 EMR 低 10%，但 cold 结果几乎一样，也说明这里的瓶颈不在计算。</li>
       </ul></li>
-    <li><b>Turin（Zen 5）——单核访存最强，被 NPS4 节点带宽限制</b>：
+    <li><b>Turin（Zen 5）——单核访存最强，被 NPS4 节点带宽限制</b><span class="note">（NPS4：每个 socket 切成 4 个 NUMA 节点，每个节点 3 个内存通道，见环境说明第 4 点）</span>：
       <ul>
         <li>单进程 cold 71.5 GB/s，单核内存流量约 48 GB/s，是 Intel 各核的 2 倍。这说明 Zen 5 每核能同时挂起更多缺失，对写流的处理也更好（推测）。</li>
         <li>计算也最强：缓存内 127 GB/s/核，频率 4.37 GHz，29.1 B/周期。</li>
@@ -291,13 +295,13 @@ function yaxis(svg, W, H, m, ymin, ymax, ylabel) {
   el("text", {x:8, y:m.t-10}, svg, ylabel);
 }
 
-function bars(id, cats, series, ylabel, scale = 1000) {
-  const host = document.getElementById(id), W = 1100, H = 300, m = {l:52, r:10, t:28, b:30};
+function bars(id, cats, series, ylabel, scale = 1000, opt = {}) {
+  const host = document.getElementById(id), W = opt.w || 1100, H = opt.h || 300, m = {l:52, r:10, t:28, b:30};
   legend(host, series, true);
   const svg = el("svg", {viewBox:`0 0 ${W} ${H}`, width:"100%"}, host);
   const ymax = Math.max(...series.flatMap(s => s.v.filter(v => v != null))) / scale * 1.12;
   yaxis(svg, W, H, m, 0, ymax, ylabel);
-  const gw = (W - m.l - m.r) / cats.length, bw = Math.min(34, gw * 0.84 / series.length);
+  const gw = (W - m.l - m.r) / cats.length, bw = Math.min(opt.bw || 34, gw * 0.84 / series.length);
   cats.forEach((c, i) => {
     const x0 = m.l + gw * i + (gw - bw * series.length) / 2;
     series.forEach((s, j) => {
@@ -366,9 +370,8 @@ bars("c-main", M.map(label), [
 table("t-main", ["平台", "encode (GB/s)", "范围", "decode (GB/s)", "范围", "decode ÷ encode", "有效数据 (GB/s)", "单进程 encode 最小–最大", "单进程 decode 最小–最大", "进程平均频率 (MHz)", "IPC"],
   M.map(m => { const r = R(m.id).cold; return [label(m), f1(r.enc), `${f1(r.enc_lo)}–${f1(r.enc_hi)}`, f1(r.dec), `${f1(r.dec_lo)}–${f1(r.dec_hi)}`,
     (r.dec / r.enc).toFixed(2), f1(r.data), `${f1(r.enc_min)}–${f1(r.enc_max)}`, `${f1(r.dec_min)}–${f1(r.dec_max)}`, f0(r.mhz), r.ipc.toFixed(2)]; }));
-bars("c-scale", M.map(label), [
-  {n:"6 进程之和", c:"#1e3a8a", v:M.map(m => R(m.id).cold.data)},
-  {n:"单进程（6 进程之和 ÷ 6）", c:"#60a5fa", v:M.map(m => R(m.id).cold.data / 6)}], "有效数据 GB/s");
+bars("c-scale-sum", ["6 进程之和"], M.map(m => ({n:label(m), c:m.c, v:[R(m.id).cold.data]})), "有效数据 GB/s", 1000, {w:560, h:300, bw:70});
+bars("c-scale-one", ["单进程（÷ 6）"], M.map(m => ({n:label(m), c:m.c, v:[R(m.id).cold.data / 6]})), "有效数据 GB/s", 1000, {w:560, h:300, bw:70});
 table("t-scale", ["平台", "6 进程之和 (GB/s)", "单进程 = ÷ 6 (GB/s)", "单进程最慢–最快 (GB/s)", "参考：只跑 1 个进程 (GB/s)", "÷ 6 相对只跑 1 个"],
   M.map(m => { const r = R(m.id).cold, a = r.data / 6, s = R(m.id).cold1.data, k = 6 / 9;
     return [label(m), f1(r.data), f1(a), `${f1(r.enc_min * k)}–${f1(r.enc_max * k)}`, f1(s), (a / s * 100).toFixed(0) + "%"]; }));
