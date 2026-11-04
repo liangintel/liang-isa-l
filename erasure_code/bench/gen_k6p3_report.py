@@ -134,6 +134,53 @@ def monitor(r):
             "enc_end": [round(min(enc_t), 2), round(max(enc_t), 2)], "dec_end": [round(min(dec_t), 2), round(max(dec_t), 2)]}
 
 
+def nt_exp(path):
+    """results/nt_exp_<host>.txt: base vs non-temporal build; cold6 is the median of its reps."""
+    r = {}
+    for line in open(path):
+        m = re.match(r"^(base|nt) (\w+) (?:rep=\d+ |(mem) )?(.*)$", line)
+        if not m:
+            continue
+        v, test, mem, rest = m.groups()
+        d = kv(rest)
+        e = r.setdefault(v, {})
+        if mem:
+            e["mem"] = {"rd": d.get("enc_rd"), "wr": d.get("enc_wr")}
+        else:
+            e.setdefault(test, []).append(d)
+    for e in r.values():
+        for k in [k for k in e if k != "mem"]:
+            reps = sorted(e[k], key=lambda x: x["enc"])
+            e[k] = reps[len(reps) // 2]
+    return r
+
+
+def ubench(path):
+    """results/ubench_<host>.txt: per-instruction throughput, kernel bytes/cycle and port counters."""
+    r = {"ops": {}, "ports": {}}
+    for line in open(path):
+        p = line.split()
+        if not p or p[0] == "#":
+            continue
+        if p[0] == "kernel":
+            r["kernel"] = kv(line)
+        elif "=" in line and p[0].startswith("p") and "per_cycle" in line and len(p) == 2:
+            r["ports"][p[0]] = kv(line)["per_cycle"]
+        elif "per_cycle" in line:
+            r["ops"][p[0]] = kv(line)
+    return r
+
+
+def annotate(path):
+    """results/ubench_annotate_<host>.txt: sampled cycles% and instructions% per mnemonic."""
+    r = {}
+    for line in open(path):
+        p = line.split()
+        if len(p) == 3 and re.fullmatch(r"[\d.]+", p[1]) and re.fullmatch(r"[\d.]+", p[2]):
+            r[p[0]] = [float(p[1]), float(p[2])]
+    return r
+
+
 def main():
     out = {}
     for h in HOSTS:
@@ -142,6 +189,13 @@ def main():
             continue
         r = parse(path)
         out[h] = {"env": r["env"], **{k: median_rep(v) for k, v in r["reps"].items()}, "mon": monitor(r)}
+    x = {"nt": {}, "ub": {}, "ann": {}}
+    for h in HOSTS:
+        for key, name, fn in (("nt", f"nt_exp_{h}.txt", nt_exp), ("ub", f"ubench_{h}.txt", ubench), ("ann", f"ubench_annotate_{h}.txt", annotate)):
+            path = os.path.join(BENCH, "results", name)
+            if os.path.exists(path):
+                x[key][h] = fn(path)
+    out["_x"] = x
     html = open(REPORT).read()
     data = json.dumps(out, separators=(",", ":"))
     html = re.sub(r"/\*DATA_BEGIN\*/.*?/\*DATA_END\*/", lambda _: f"/*DATA_BEGIN*/{data}/*DATA_END*/", html, flags=re.S)

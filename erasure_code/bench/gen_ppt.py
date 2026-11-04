@@ -262,7 +262,8 @@ write(ph(s, 28).text_frame, [
     "按 vCPU 对比：E-core vs P-core 超线程",
     "6+3 --cold 6 进程对比（含 AMD Turin）：频率、内存流量、瓶颈",
     "优化实验：非临时存储（去掉 RFO）",
-    "结论与建议"], 20)
+    "指令级分析：Turin 为什么单核算得快",
+    "结论与建议、复现命令"], 20)
 
 # 3. platforms
 s = new(prs, 5, "测试平台", "所有数据由 erasure_code/bench 下的脚本生成；吞吐均为“有效数据”= isa-l encode 带宽 × k/(k+p)")
@@ -291,7 +292,8 @@ write(ph(s, 28).text_frame, [
     "**数据在内存里看内存带宽和 RFO**：每 socket CWF 246 ＞ EMR 179 ＞ GNR 175 ＞ SRF 122 GB/s；E-core 写校验块有额外的 RFO 读流量",
     "**SMT 对 EC 无收益**：缓存内下降 2%–6%，只在内存未饱和时 +12%–17%",
     "**6+3 --cold 6 进程**：Turin 186 ＞ CWF 125 ＞ GNR 116 ≈ EMR 114 ＞ SRF 88 GB/s；所有平台都没有降频，差异来自单核访存能力",
-    f"**非临时存储**（isa-l 编译选项 EC_ALIGNED_ADDR）去掉 RFO：GNR cold encode {gb(NT['gnrsp']['base'][0]):.0f} → {gb(NT['gnrsp']['nt'][0]):.0f} GB/s，超过原版 Turin；但 Turin 用后也翻倍到 {gb(NT['turin']['nt'][0]):.0f}"], 17)
+    f"**非临时存储**（isa-l 编译选项 EC_ALIGNED_ADDR）去掉 RFO：GNR cold encode {gb(NT['gnrsp']['base'][0]):.0f} → {gb(NT['gnrsp']['nt'][0]):.0f} GB/s，超过原版 Turin；但 Turin 用后也翻倍到 {gb(NT['turin']['nt'][0]):.0f}",
+    "**关键指令 vgf2p8affineqb**（GF 乘法）：每周期 Turin 128 B、EMR/GNR 64 B（只走 port 0）、SRF/CWF 32 B；加上 Turin 不降频，单核编码是 GNR 的 2.1 倍"], 15)
 
 # 5. section
 s = prs.slides.add_slide(prs.slide_layouts[14])
@@ -468,6 +470,81 @@ write(ph(s, 28).text_frame, [
     f"**CWF** +{up('cwf') * 100:.0f}%，达到计算上限",
     f"**Turin** 也 +{up('turin') * 100:.0f}%：这不是 Intel 独有的优化，同样软件下 Turin 仍领先",
     "**代价**：数据还要被读时变慢约 20%；要求 64 B 对齐，否则崩溃；是全库编译期开关，生产中需要按场景分发"], 15)
+
+# 20a. instruction throughput
+X = K63["_x"]
+MU = [h for h in ALL5 if h in X["ub"]]
+op = lambda h, t: X["ub"][h]["ops"].get(t, {}).get("per_cycle")
+cell = lambda h, t, w: "–" if op(h, t) is None else f"{op(h, t):.2f}"
+s = new(prs, 6, "指令级分析：关键指令的吞吐", "微基准 ec_ubench.c：12 条互不依赖的同类指令，每周期执行几条（zmm 每条 64 B，ymm 每条 32 B）")
+box = take(s, 27)
+rows = [["指令"] + [PLAT[h][0] for h in MU]]
+for n, w, t in (("GF 乘法 zmm", 64, "aff_z"), ("GF 乘法 ymm", 32, "aff_y"), ("异或 zmm", 64, "xor_z"), ("异或 ymm", 32, "xor_y"),
+                ("向量读 zmm", 64, "ld_z"), ("向量读 ymm", 32, "ld_y"), ("乘法+异或成对 zmm", 0, "affxor_z"), ("乘法+异或成对 ymm", 0, "affxor_y")):
+    rows.append([n] + [cell(h, t, w) for h in MU])
+table(s, (box[0], box[1] + 0.1, box[2], box[3]), rows, widths=[1.7] + [1] * len(MU), size=11, hl_rows=(1,))
+write(ph(s, 28).text_frame, [
+    "内核循环：每个源块 1 次读 + 3 次 vpbroadcastq + 3 条 vgf2p8affineqb + 3 条 vpxorq",
+    "**vgf2p8affineqb**（GF(2⁸) 乘法）每周期：Turin **2 条 512 位 = 128 B**；EMR/GNR **1 条**（512 位只能走 port 0）= 64 B；SRF/CWF 只有 256 位 **1 条 = 32 B**",
+    "异或 vpxorq zmm：Turin 4 条/周期，EMR/GNR 2 条",
+    "SRF 的 GF 乘法和异或抢同一组单元（成对 1.42 条/周期，CWF 1.96），256 位读每周期只有 1 次"], 14)
+
+# 20b. kernel speed and unit busy
+kern = lambda h: X["ub"][h]["kernel"]
+kgb = lambda h: kern(h)["src_bytes_per_cycle"] * kern(h)["mhz"] / 1000
+s = new(prs, 6, "指令级分析：单核内核速度与执行单元忙碌度", "ec_encode_data 6+3，每块 4 KB，数据在 L1，CPU 1")
+box = take(s, 27)
+bar_chart(s, (box[0], box[1], box[2], 2.3), ["单核源数据 GB/s"], [(PLAT[h][0], [kgb(h)], PLAT[h][1]) for h in MU], "GB/s", fmt="0", size=10, gap=30)\
+    .category_axis.tick_label_position = XL_TICK_LABEL_POSITION.NONE
+rows = [["", "B/周期", "MHz", "GB/s", "Turin÷"]]
+for h in MU:
+    rows.append([PLAT[h][0], f"{kern(h)['src_bytes_per_cycle']:.1f}", f"{kern(h)['mhz']:,.0f}", f"{kgb(h):.1f}", f"{kgb('turin') / kgb(h):.2f}×"])
+table(s, (box[0], box[1] + 2.45, box[2], 2), rows, widths=[1, 1, 1, 1, 1], size=11)
+b2 = take(s, 28)
+Z = lambda h: h in ("emr06", "gnrsp", "turin")
+rows = [["", "GF 乘法单元", "异或", "向量读", "端口计数器"]]
+for h in MU:
+    C = 384 / kern(h)["src_bytes_per_cycle"]
+    a, x, v, sfx = (18, 21, 24, "z") if Z(h) else (36, 42, 30, "y")
+    pr = X["ub"][h]["ports"]
+    pc = f"p0 {pr['p0'] * 100:.0f}%，p5 约 {(21 - (pr['p0'] * C - 18)) / C * 100:.0f}%" if pr else "–"
+    rows.append([PLAT[h][0], f"{a / (C * op(h, 'aff_' + sfx)) * 100:.0f}%", f"{x / (C * op(h, 'xor_' + sfx)) * 100:.0f}%", f"{v / (C * op(h, 'ld_' + sfx)) * 100:.0f}%", pc])
+table(s, (b2[0], b2[1], b2[2], 2), rows, widths=[0.8, 1.1, 0.8, 0.9, 1.9], size=11)
+textbox(s, b2[0], b2[1] + 2.05, b2[2], 2.3, [
+    "忙碌度 = 每 64 B 输出的指令数 ÷（实测周期数 × 峰值吞吐）",
+    "**Intel：GF 乘法单元被用满**，EMR/GNR 的 port 0 忙 97% / 90%",
+    "**Turin：GF 单元还有余量**，受限于每周期 2 次向量读和发射宽度（IPC 6.7）",
+    "频率放大差距：GNR 跑 AVX-512 GFNI 降到 3.1 GHz，Turin 4.5 GHz"], 12)
+
+# 20c. reproduction commands
+s = new(prs, 4, "复现命令")
+box = take(s, 28)
+cmds = [
+    "# 原命令",
+    "parallel -j 6 'taskset -c {1} ./erasure_code_perf -k 6 -p 3 -e 3 -s 128K --cold' ::: 1 9 17 25 33 41",
+    "# 6+3 全部测试项 + 报告（erasure_code/bench/）",
+    "BIN=<isal>/erasure_code_perf ./k6p3_bench.sh ; python3 gen_k6p3_report.py",
+    "#   频率/IPC：perf stat -x, -I 200 -A -C 1,9,17,25,33,41 -e cycles,instructions",
+    "#   内存：perf stat -x, -I 200 -a -e uncore_imc/event=0x05,umask=0xcf/,...umask=0xf0/（AMD：amd_umc_N/event=0x0a,rdwrmask=1|2/）",
+    "#   功耗：turbostat --quiet -S --show Bzy_MHz,PkgWatt,PkgTmp --interval 0.2",
+    "# 非临时存储：make -f Makefile.unx D=EC_ALIGNED_ADDR erasure_code_perf",
+    "./nt_exp.sh <isal> <原版 erasure_code_perf>",
+    "# 指令吞吐 / 内核速度 / 端口计数（UOPS_DISPATCHED = event 0xB2）",
+    "PORTEV='cpu/event=0xb2,umask=0x01,name=p0/,cpu/event=0xb2,umask=0x20,name=p5_11/' ./ubench_run.sh <isal>",
+    "# 指令占比：perf record -e cycles:pp ... ; perf annotate --stdio --percent-type global-period",
+    "./ubench_annotate.sh",
+    "# 生成本 PPT：python3 gen_ppt.py"]
+tb = s.shapes.add_textbox(Inches(box[0]), Inches(box[1] - 0.2), Inches(box[2]), Inches(box[3]))
+tb.text_frame.word_wrap = True
+for i, c in enumerate(cmds):
+    p = tb.text_frame.paragraphs[0] if i == 0 else tb.text_frame.add_paragraph()
+    r = p.add_run()
+    r.text = c
+    p.space_after = Pt(5)
+    p.space_before = Pt(0)
+    p.line_spacing = 1.0
+    font(r.font, 13, color=GRAY if c.startswith("#") else DARK)
+    r.font.name = "Consolas"
 
 # 20. conclusions
 s = new(prs, 4, "结论与建议")
