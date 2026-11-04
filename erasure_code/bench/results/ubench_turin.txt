@@ -1,0 +1,12 @@
+# host amd-turin; AMD EPYC 9655 96-Core Processor
+aff_y     per_cycle=1.98 cycles_per_op=0.504 ipc=2.49 mhz=4520
+xor_y     per_cycle=3.95 cycles_per_op=0.253 ipc=4.95 mhz=4506
+bc_y      per_cycle=1.98 cycles_per_op=0.504 ipc=2.49 mhz=4520
+ld_y      per_cycle=1.98 cycles_per_op=0.505 ipc=2.49 mhz=4533
+affxor_y  per_cycle=3.44 cycles_per_op=0.290 ipc=4.32 mhz=4509
+aff_z     per_cycle=1.98 cycles_per_op=0.504 ipc=2.24 mhz=4524
+xor_z     per_cycle=3.94 cycles_per_op=0.254 ipc=4.45 mhz=4506
+bc_z      per_cycle=1.98 cycles_per_op=0.505 ipc=2.24 mhz=4520
+ld_z      per_cycle=1.98 cycles_per_op=0.504 ipc=2.49 mhz=4517
+affxor_z  per_cycle=3.46 cycles_per_op=0.289 ipc=4.34 mhz=4533
+kernel    src_bytes_per_cycle=24.92 ipc=6.69 mhz=4516

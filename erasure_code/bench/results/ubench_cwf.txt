@@ -1,0 +1,7 @@
+# host localhost; Intel(R) Xeon? 6992E+C
+aff_y     per_cycle=0.99 cycles_per_op=1.006 ipc=1.12 mhz=3191
+xor_y     per_cycle=1.98 cycles_per_op=0.505 ipc=2.24 mhz=3192
+bc_y      per_cycle=2.96 cycles_per_op=0.338 ipc=3.34 mhz=3191
+ld_y      per_cycle=1.49 cycles_per_op=0.672 ipc=1.87 mhz=3192
+affxor_y  per_cycle=1.96 cycles_per_op=0.509 ipc=2.46 mhz=3192
+kernel    src_bytes_per_cycle=7.97 ipc=3.14 mhz=3192

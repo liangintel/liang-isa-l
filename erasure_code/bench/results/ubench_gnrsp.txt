@@ -1,0 +1,17 @@
+# host gnrsp; Intel(R) Xeon(R) 6767P
+aff_y     per_cycle=1.98 cycles_per_op=0.505 ipc=2.48 mhz=3592
+xor_y     per_cycle=2.96 cycles_per_op=0.338 ipc=3.71 mhz=3593
+bc_y      per_cycle=2.96 cycles_per_op=0.338 ipc=3.71 mhz=3592
+ld_y      per_cycle=2.94 cycles_per_op=0.341 ipc=3.68 mhz=3592
+affxor_y  per_cycle=2.78 cycles_per_op=0.359 ipc=3.50 mhz=3592
+aff_z     per_cycle=0.99 cycles_per_op=1.006 ipc=1.13 mhz=3593
+xor_z     per_cycle=1.98 cycles_per_op=0.505 ipc=2.24 mhz=3593
+bc_z      per_cycle=2.96 cycles_per_op=0.338 ipc=3.34 mhz=3593
+ld_z      per_cycle=1.97 cycles_per_op=0.507 ipc=2.48 mhz=3593
+affxor_z  per_cycle=1.84 cycles_per_op=0.543 ipc=2.31 mhz=3592
+kernel    src_bytes_per_cycle=16.99 ipc=4.56 mhz=3095
+  p0 per_cycle=0.90
+  p2_3_10 per_cycle=1.35
+  p1 per_cycle=0.19
+  p6 per_cycle=0.41
+  p5_11 per_cycle=0.92
