@@ -1,0 +1,15 @@
+# host emr06; events cycles:pp / instructions:pp
+    94.33%  [.] ..@10.next_vect
+     3.34%  [.] gf_3vect_dot_prod_avx512_gfni.loop64
+     0.61%  [k] smp_call_function_many_cond
+mnemonic         cycles%  instr%
+vgf2p8affineqb     23.9   21.4
+vpxorq             21.7   22.4
+vpbroadcastq       18.7   16.5
+jl                 17.5   20.8
+add                 5.8    5.9
+jge                 4.7    1.4
+mov                 3.1    5.7
+vmovdqu8            2.5    5.4
+jle                 0.7    0.0
+pause               0.6    0.0

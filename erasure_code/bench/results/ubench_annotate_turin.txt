@@ -1,0 +1,16 @@
+# host amd-turin; events cycles:pp / instructions
+    92.34%  [.] ..@10.next_vect
+     3.60%  [.] gf_3vect_dot_prod_avx512_gfni.loop64
+     1.17%  [.] gf_3vect_dot_prod_avx512_gfni.len_lt_64
+mnemonic         cycles%  instr%
+vpxorq             20.8   15.7
+vpbroadcastq       17.8   20.5
+vgf2p8affineqb     16.6   26.2
+add                14.8    7.4
+vmovdqu8           11.6   15.6
+cmp                 9.5   10.8
+mov                 5.7    0.4
+sub                 1.5    1.6
+xor                 0.8    0.8
+push                0.5    0.0
+jge                 0.0    0.7

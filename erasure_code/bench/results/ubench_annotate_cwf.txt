@@ -1,0 +1,15 @@
+# host localhost; events cycles:pp / instructions:pp
+    96.36%  [.] ..@10.next_vect
+     2.47%  [.] gf_3vect_dot_prod_avx2_gfni.loop64
+     0.51%  [.] gf_3vect_dot_prod_avx2_gfni.exit
+mnemonic         cycles%  instr%
+vpxor              36.1   30.1
+vgf2p8affineqb     34.4   23.0
+vmovdqu            16.4   21.4
+addq                4.3    9.3
+movq                2.8    4.6
+cmpq                2.8    4.0
+jl                  2.3    4.6
+xorq                0.3    0.6
+subq                0.2    0.8
+jge                 0.0    1.2

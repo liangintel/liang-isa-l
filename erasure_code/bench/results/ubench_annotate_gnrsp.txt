@@ -1,0 +1,16 @@
+# host gnrsp; events cycles:pp / instructions:pp
+    94.13%  [.] ..@10.next_vect
+     2.72%  [.] gf_3vect_dot_prod_avx512_gfni.loop64
+     0.58%  [k] mab_mas_cp
+mnemonic         cycles%  instr%
+vpxorq             28.8   24.1
+vgf2p8affineqb     19.3   22.4
+jl                 15.8   17.6
+vpbroadcastq       14.1   14.4
+add                 8.2    8.6
+jge                 4.8    1.3
+mov                 4.1    6.2
+vmovdqu8            3.2    4.2
+lock                0.6    0.0
+pop                 0.3    0.2
+call                0.2    0.3
