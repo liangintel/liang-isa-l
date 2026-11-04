@@ -1,0 +1,17 @@
+# host emr06; INTEL(R) XEON(R) PLATINUM 8576C
+aff_y     per_cycle=1.98 cycles_per_op=0.506 ipc=2.48 mhz=3991
+xor_y     per_cycle=2.95 cycles_per_op=0.339 ipc=3.70 mhz=3991
+bc_y      per_cycle=2.95 cycles_per_op=0.339 ipc=3.70 mhz=3991
+ld_y      per_cycle=2.95 cycles_per_op=0.339 ipc=3.69 mhz=3991
+affxor_y  per_cycle=2.78 cycles_per_op=0.360 ipc=3.49 mhz=3991
+aff_z     per_cycle=0.99 cycles_per_op=1.010 ipc=1.24 mhz=3991
+xor_z     per_cycle=1.97 cycles_per_op=0.508 ipc=2.47 mhz=3991
+bc_z      per_cycle=2.93 cycles_per_op=0.341 ipc=3.67 mhz=3991
+ld_z      per_cycle=1.97 cycles_per_op=0.508 ipc=2.47 mhz=3991
+affxor_z  per_cycle=1.81 cycles_per_op=0.552 ipc=2.27 mhz=3991
+kernel    src_bytes_per_cycle=18.24 ipc=4.89 mhz=3790
+  p0 per_cycle=0.97
+  p2_3_10 per_cycle=1.44
+  p1 per_cycle=0.18
+  p6 per_cycle=0.45
+  p5_11 per_cycle=0.97

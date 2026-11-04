@@ -1,0 +1,7 @@
+# host srfsp; Intel(R) Xeon(R) 6780E
+aff_y     per_cycle=0.99 cycles_per_op=1.011 ipc=1.12 mhz=2993
+xor_y     per_cycle=1.48 cycles_per_op=0.676 ipc=1.67 mhz=2994
+bc_y      per_cycle=1.97 cycles_per_op=0.509 ipc=2.22 mhz=2799
+ld_y      per_cycle=0.99 cycles_per_op=1.010 ipc=1.24 mhz=2994
+affxor_y  per_cycle=1.42 cycles_per_op=0.702 ipc=1.79 mhz=2994
+kernel    src_bytes_per_cycle=5.42 ipc=2.14 mhz=2992
